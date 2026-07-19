@@ -4396,7 +4396,12 @@ function App() {
                         React.createElement("span", { style: { width: 5, height: 5, borderRadius: "50%", background: T.red } }),
                         React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.25)", letterSpacing: "0.06em", textTransform: "uppercase" } }, `${sceneCfg.label} · Ready`))),
                 React.createElement("a", { href: STUDIO_URL, target: "_blank", rel: "noopener noreferrer", title: "EVERYTHING. studio", style: { display: "block", padding: "7px 0.5rem 2px", fontSize: 9, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.22)", textDecoration: "none" } }, "EVERYTHING. studio ↗")),
-            React.createElement("div", { style: { flex: 1, overflowY: "auto", overflowX: "hidden", minWidth: 0, background: T.canvas, backgroundImage: "linear-gradient(180deg, rgba(255,255,255,0.55), rgba(255,255,255,0) 140px), radial-gradient(circle, rgba(0,0,0,0.055) 1px, transparent 1px)", backgroundSize: "100% 100%, 28px 28px", paddingBottom: isMobile ? 90 : 0, boxSizing: "border-box" } },
+            // paddingTop covers the notch/Dynamic Island when installed as a
+            // home-screen app (standalone mode has no browser chrome to push
+            // content below it); resolves to 0px in a normal Safari tab and on
+            // desktop, same as the existing safe-area-inset-bottom handling on
+            // the mobile bottom bar below.
+            React.createElement("div", { style: { flex: 1, overflowY: "auto", overflowX: "hidden", minWidth: 0, background: T.canvas, backgroundImage: "linear-gradient(180deg, rgba(255,255,255,0.55), rgba(255,255,255,0) 140px), radial-gradient(circle, rgba(0,0,0,0.055) 1px, transparent 1px)", backgroundSize: "100% 100%, 28px 28px", paddingTop: isMobile ? "env(safe-area-inset-top)" : 0, paddingBottom: isMobile ? 90 : 0, boxSizing: "border-box" } },
                 tab === "today" && TodayView(),
                 tab === "dump" && DumpView(),
                 tab === "notes" && NotesView(),
