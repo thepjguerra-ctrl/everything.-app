@@ -1,0 +1,15 @@
+{
+  "name": "EVERYTHING.",
+  "short_name": "EVERYTHING.",
+  "description": "A place to dump everything on your mind and let it sort itself into a day you can actually work from.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#EBEBEB",
+  "theme_color": "#141414",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
