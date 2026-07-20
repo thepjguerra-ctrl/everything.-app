@@ -2145,6 +2145,7 @@ function App() {
     const [ideaDraftTag, setIdeaDraftTag] = useState("Random");
     const [ideaSendModal, setIdeaSendModal] = useState(null); // idea id being sent to project
     const [ideaEditModal, setIdeaEditModal] = useState(null); // idea being edited
+    const [sentToTodayIds, setSentToTodayIds] = useState({}); // ideas just sent to Today's Making — drives the "✓ Sent" confirmation and blocks duplicate taps
     // Notes filters (transient) — no more Quick Capture draft fields; "New
     // Note" creates the note record directly and opens it in the editor pane.
     const [noteFilter, setNoteFilter] = useState("all");
@@ -2156,6 +2157,7 @@ function App() {
     // runs long, same as writing in Apple Notes.
     const noteBodyRef = useRef(null);
     const pendingNoteFocusRef = useRef(false); // set true right after "New Note" so the body gets focus once it mounts
+    const sentToTodayLockRef = useRef({}); // synchronous re-entrancy lock so a double-tap can't send the same idea twice before React re-renders
     useEffect(() => {
         const el = noteBodyRef.current;
         if (!el)
@@ -3917,7 +3919,18 @@ function App() {
         function deleteIdea(id) { setIdeas(prev => prev.filter(i => i.id !== id)); }
         function archiveIdea(id) { setIdeas(prev => prev.map(i => i.id === id ? { ...i, archived: !i.archived } : i)); }
         function sendIdeaToToday(idea) {
+            // Synchronous lock blocks an instant double-tap before the disabled
+            // state has a chance to render; the state flag drives the "✓ Sent"
+            // confirmation and keeps the button disabled for the window after.
+            if (sentToTodayLockRef.current[idea.id] || sentToTodayIds[idea.id])
+                return;
+            sentToTodayLockRef.current[idea.id] = true;
             setPlan(p => ({ ...p, creative: [...(p.creative || []), mk(idea.title, "creative")] }));
+            setSentToTodayIds(prev => ({ ...prev, [idea.id]: true }));
+            setTimeout(() => {
+                delete sentToTodayLockRef.current[idea.id];
+                setSentToTodayIds(prev => { const next = { ...prev }; delete next[idea.id]; return next; });
+            }, 2500);
         }
         function sendIdeaToProject(idea, projId, secKey) {
             setProjects(prev => prev.map(proj => {
@@ -4009,6 +4022,7 @@ function App() {
                     return "yesterday";
                 return `${d}d ago`;
             })();
+            const sentToday = !!sentToTodayIds[idea.id];
             return React.createElement("div", {
                 key: idea.id,
                 style: {
@@ -4032,8 +4046,9 @@ function App() {
                 style: { fontSize: isMobile ? 12.5 : 10, padding: isMobile ? "8px 12px" : "3px 8px", borderRadius: 2, cursor: "pointer", border: `1.5px solid ${T.line}`, background: T.ink, color: "#fff", fontWeight: 700, letterSpacing: "0.02em", ...(isMobile ? { minHeight: 36 } : {}) }
             }, "Edit"), !isArchived && React.createElement("button", {
                 onClick: () => sendIdeaToToday(idea),
-                style: { fontSize: isMobile ? 12.5 : 10, padding: isMobile ? "8px 12px" : "3px 8px", borderRadius: 2, cursor: "pointer", border: `1.5px solid ${T.line}`, background: "transparent", color: T.ink, fontWeight: 600, letterSpacing: "0.02em", ...(isMobile ? { minHeight: 36 } : {}) }
-            }, "→ Today"), !isArchived && projects.length > 0 && React.createElement("button", {
+                disabled: sentToday,
+                style: { fontSize: isMobile ? 12.5 : 10, padding: isMobile ? "8px 12px" : "3px 8px", borderRadius: 2, cursor: sentToday ? "default" : "pointer", border: `1.5px solid ${sentToday ? T.ink : T.line}`, background: sentToday ? T.ink : "transparent", color: sentToday ? "#fff" : T.ink, fontWeight: sentToday ? 700 : 600, letterSpacing: "0.02em", transition: "background .15s, color .15s", ...(isMobile ? { minHeight: 36 } : {}) }
+            }, sentToday ? "✓ Sent" : "→ Today"), !isArchived && projects.length > 0 && React.createElement("button", {
                 onClick: () => setIdeaSendModal({ ideaId: idea.id, projectId: projects[0]?.id ?? null, sectionKey: "ideas" }),
                 style: { fontSize: isMobile ? 12.5 : 10, padding: isMobile ? "8px 12px" : "3px 8px", borderRadius: 2, cursor: "pointer", border: `1.5px solid ${T.line}`, background: "transparent", color: T.ink, fontWeight: 600, letterSpacing: "0.02em", ...(isMobile ? { minHeight: 36 } : {}) }
             }, "→ Project"), React.createElement("button", {
