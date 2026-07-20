@@ -2322,8 +2322,9 @@ function App() {
         // Merge new sections into current plan
         const merged = empty();
         SECS.forEach(s => { merged[s.key] = [...(plan[s.key] || []), ...(newSections[s.key] || [])]; });
-        // Rebuild focus from top action items (up to 3 promoted into the pinned Focus card)
-        const focusCandidates = [...merged.doFirst, ...merged.creative, ...merged.people].slice(0, 3);
+        // Rebuild focus from top action items (up to 3 promoted into the pinned Focus card).
+        // Existing focus items come first so a new dump never displaces what's already promoted.
+        const focusCandidates = [...merged.focus, ...merged.doFirst, ...merged.creative, ...merged.people].slice(0, 3);
         const usedIds = new Set(focusCandidates.map(t => t.id));
         merged.focus = focusCandidates.map(t => ({ ...t, section: "focus", priority: "high" }));
         SECS.forEach(s => { if (s.key !== "focus")
