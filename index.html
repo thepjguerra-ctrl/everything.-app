@@ -2416,9 +2416,6 @@ function App() {
         setOpenNoteId(null);
         setNoteEditDraft(null);
     }
-    function saveNoteEdit() {
-        commitNoteDraft();
-    }
     function deleteNoteFromModal(id) {
         askConfirm({ title: "Delete note", message: "This note and everything in it will be gone for good.", confirmLabel: "Delete note", onConfirm: () => {
                 setNotes(prev => prev.filter(n => n.id !== id));
@@ -4158,8 +4155,8 @@ function App() {
                                     placeholder: "Note title",
                                     style: { flex: 1, minWidth: 0, fontSize: 28, fontWeight: 700, fontFamily: "inherit", padding: "4px 0", background: "transparent", border: "none", color: T.ink, outline: "none", boxSizing: "border-box" }
                                 }),
-                                React.createElement("button", { onClick: closeNote, title: "Close note", style: { ...C.iBtn(isMobile), fontSize: 18, flexShrink: 0, marginTop: 4 } },
-                                    React.createElement("i", { className: "ti ti-x" }))),
+                                React.createElement("button", { onClick: closeNote, title: "Back to notes", style: { ...C.iBtn(isMobile), fontSize: 18, flexShrink: 0, marginTop: 4 } },
+                                    React.createElement("i", { className: "ti ti-arrow-left" }))),
                             React.createElement("div", { style: { display: "flex", gap: 8, flex: 1 } },
                                 React.createElement("textarea", {
                                     ref: noteBodyRef,
@@ -4176,7 +4173,9 @@ function App() {
                             React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginTop: 26, paddingTop: 16, borderTop: `1px dashed ${T.lineSoft}` } },
                                 React.createElement("div", { style: { flex: 1, minWidth: 200 } },
                                     React.createElement(AreaPicker, { value: noteEditDraft.area, onChange: v => setNoteEditDraft(d => ({ ...d, area: v })) })),
-                                React.createElement("button", { onClick: saveNoteEdit, style: { ...C.btnPrimary, flex: "none", padding: "8px 20px" } }, "Save"),
+                                React.createElement("button", { onClick: closeNote, style: { ...C.btnPrimary, flex: "none", padding: "8px 20px", display: "inline-flex", alignItems: "center", gap: 6 } },
+                                    React.createElement("i", { className: "ti ti-check", style: { fontSize: 14 }, "aria-hidden": true }),
+                                    " Done"),
                                 React.createElement("button", { onClick: () => deleteNoteFromModal(noteEditDraft.id), style: C.btnDanger },
                                     React.createElement("i", { className: "ti ti-trash", style: { fontSize: 14 }, "aria-hidden": true })))))));
     };
