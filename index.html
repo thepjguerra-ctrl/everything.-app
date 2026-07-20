@@ -3814,10 +3814,7 @@ function App() {
             React.createElement("div", { style: { display: "flex", gap: 16, alignItems: "flex-start", flexDirection: isMobile ? "column" : "row" } },
                 React.createElement("div", { style: { flex: 1, minWidth: 0, width: isMobile ? "100%" : "auto" } },
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 12 } },
-                        React.createElement("span", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.12em", color: T.ink3 } }, "YOUR PROJECTS"),
-                        !addingProject && (React.createElement("button", { onClick: () => setAddingProject(true), style: { display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 12px", borderRadius: 3, border: `1.5px solid ${T.line}`, background: T.ink, color: "#fff", cursor: "pointer", fontSize: 10.5, fontWeight: 700, fontFamily: FONT_CONDENSED, textTransform: "uppercase", letterSpacing: "0.07em" } },
-                            React.createElement("i", { className: "ti ti-plus", style: { fontSize: 11 } }),
-                            " ADD PROJECT"))),
+                        React.createElement("span", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.12em", color: T.ink3 } }, "YOUR PROJECTS")),
                     addingProject && (React.createElement("div", { style: { border: `1.5px dashed rgba(0,0,0,0.18)`, borderRadius: 4, padding: "16px", background: T.panel, marginBottom: 12, boxShadow: T.cardShadow } },
                         React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.1em", color: T.ink3, marginBottom: 10 } }, "NEW PROJECT"),
                         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 12 } },
@@ -3842,6 +3839,9 @@ function App() {
                         React.createElement("button", { onClick: () => setAddingProject(true), style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 20px", borderRadius: 3, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: FONT_CONDENSED, textTransform: "uppercase", letterSpacing: "0.07em", background: T.ink, color: "#fff", border: "none" } },
                             React.createElement("i", { className: "ti ti-plus", style: { fontSize: 12 } }),
                             " ADD YOUR FIRST PROJECT"))),
+                    projects.length > 0 && !addingProject && (React.createElement("button", { onClick: () => setAddingProject(true), style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, width: "100%", padding: "12px 20px", marginBottom: 12, borderRadius: 3, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: FONT_CONDENSED, textTransform: "uppercase", letterSpacing: "0.07em", background: T.ink, color: "#fff", border: "none" } },
+                        React.createElement("i", { className: "ti ti-plus", style: { fontSize: 12 } }),
+                        " ADD PROJECT")),
                     projects.filter(proj => areaMatchesFilter(proj.area, projectAreaFilter)).length === 0 && projects.length > 0 && projectAreaFilter !== "all" && (React.createElement("div", { style: { border: `1.5px dashed ${T.lineSoft}`, borderRadius: 3, padding: "1.6rem", textAlign: "center", fontSize: 12, color: T.ink3 } }, "No projects in this area yet.")),
                     projects.filter(proj => areaMatchesFilter(proj.area, projectAreaFilter)).map(proj => {
                         const allItems = Object.values(proj.sections).flat();
