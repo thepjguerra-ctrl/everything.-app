@@ -4344,8 +4344,10 @@ function App() {
     return (React.createElement("div", { style: { background: "transparent", padding: isMobile ? 0 : "1.5rem", minHeight: "100vh", width: "100%", boxSizing: "border-box", display: "flex", justifyContent: "center", alignItems: "flex-start", position: "relative", zIndex: 1 } },
         React.createElement(KineticBackground, { scene: bgScene }),
         React.createElement("style", null, `
-            .ev-row .ev-handle { opacity: 0; transition: opacity .15s; }
-            .ev-row:hover .ev-handle { opacity: 1; }
+            /* Item action handles (⋮ edit, remove) stay visible whenever an item
+               has content, so it's always clear that editing is available —
+               no hover/tap-to-reveal (which never worked on touch anyway). */
+            .ev-row .ev-handle { opacity: 1; }
             @keyframes dlspin { to { transform: rotate(360deg); } }
             .ti-loader-2 { animation: dlspin 1s linear infinite; }
             .v3-nav-btn { transition: background .12s; }
