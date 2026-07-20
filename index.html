@@ -2169,6 +2169,42 @@ function App() {
             try { el.focus(); } catch (e) { /* no-op if focus can't be set */ }
         }
     }, [noteEditDraft?.body, noteEditDraft?.id]);
+    // Keep the focused Notes field above the iOS on-screen keyboard. iOS Safari
+    // shrinks the *visual* viewport when the keyboard opens but doesn't reliably
+    // scroll the focused field into the space that's left, so a tall note field
+    // ends up hidden behind the keyboard. We lift it ourselves. The guard makes
+    // this a no-op on desktop (visual viewport ≈ layout viewport there).
+    function liftNoteFieldIntoView(el) {
+        if (!el || typeof window === "undefined")
+            return;
+        const vv = window.visualViewport;
+        if (!vv || vv.height >= window.innerHeight - 150)
+            return; // no keyboard shrinking the viewport → nothing to do
+        const rect = el.getBoundingClientRect();
+        const margin = 24;
+        const top = rect.top - vv.offsetTop;
+        const bottom = rect.bottom - vv.offsetTop;
+        let delta = 0;
+        if (top < margin || rect.height > vv.height - margin)
+            delta = top - margin; // tall field or above the view → align its top just below the top edge
+        else if (bottom > vv.height - margin)
+            delta = bottom - (vv.height - margin); // below the keyboard line → pull it up
+        if (Math.abs(delta) > 2)
+            window.scrollBy({ top: delta, behavior: "smooth" });
+    }
+    const onNoteFieldFocus = (e) => {
+        const el = e.currentTarget;
+        // Wait for the keyboard to finish animating in before measuring.
+        window.setTimeout(() => liftNoteFieldIntoView(el), 300);
+    };
+    useEffect(() => {
+        if (!noteEditDraft || typeof window === "undefined" || !window.visualViewport)
+            return;
+        const vv = window.visualViewport;
+        const onResize = () => liftNoteFieldIntoView(document.activeElement);
+        vv.addEventListener("resize", onResize);
+        return () => vv.removeEventListener("resize", onResize);
+    }, [noteEditDraft]);
     const [projectEditModal, setProjectEditModal] = useState(null); // project whose name/desc is being edited
     const [projectItemEdit, setProjectItemEdit] = useState(null); // { projId, secKey, item } being edited
     const [confirmState, setConfirmState] = useState(null); // in-app confirm dialog payload
@@ -4144,6 +4180,7 @@ function App() {
                                 React.createElement("input", {
                                     key: noteEditDraft.id, value: noteEditDraft.title,
                                     onChange: e => setNoteEditDraft(d => ({ ...d, title: e.target.value })),
+                                    onFocus: onNoteFieldFocus,
                                     placeholder: "Note title",
                                     style: { flex: 1, minWidth: 0, fontSize: 28, fontWeight: 700, fontFamily: "inherit", padding: "4px 0", background: "transparent", border: "none", color: T.ink, outline: "none", boxSizing: "border-box" }
                                 }),
@@ -4154,6 +4191,7 @@ function App() {
                                     ref: noteBodyRef,
                                     value: noteEditDraft.body,
                                     onChange: e => setNoteEditDraft(d => ({ ...d, body: e.target.value })),
+                                    onFocus: onNoteFieldFocus,
                                     placeholder: "Write anything…",
                                     style: {
                                         flex: 1, minWidth: 0, fontSize: 16, lineHeight: 1.7, fontFamily: "inherit",
