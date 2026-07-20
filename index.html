@@ -2016,7 +2016,7 @@ function App() {
     const [doneLog, setDoneLog] = useState(() => S.doneLog ?? []);
     const [ideas, setIdeas] = useState(() => S.ideas ?? []);
     const [notes, setNotes] = useState(() => S.notes ?? []);
-    const [workFolders, setWorkFoldersState] = useState(() => S.workFolders ?? []);
+    const [workFolders] = useState(() => S.workFolders ?? []); // saved folders kept for backward-compat area tagging; no longer user-editable
     // Keep the module-level AREAS/AREA_MAP mirror in sync every render so the
     // picker, chips and filters always reflect the current Work folders.
     setWorkFolders(workFolders);
@@ -2177,7 +2177,6 @@ function App() {
     // Project area tagging (transient)
     const [newProjectArea, setNewProjectArea] = useState(null);
     const [projectAreaFilter, setProjectAreaFilter] = useState("all");
-    const [newWorkFolder, setNewWorkFolder] = useState("");
     const [addingCalEvent, setAddingCalEvent] = useState(false);
     const [calViewYear, setCalViewYear] = useState(() => new Date().getFullYear());
     const [calViewMonth, setCalViewMonth] = useState(() => new Date().getMonth());
@@ -2193,21 +2192,6 @@ function App() {
         });
     }, [organized, todayDump, plan, rolling, dumpItems,
         widgets, activePreset, modules, bottomBarModule, introDismissed, onboardingSeen, projects, calendarEvents, ideas, notes, workFolders]);
-    // ── Work folders (Work subsections) ─────────────────────────────────────────
-    const addWorkFolder = (label) => {
-        const name = (label || "").trim();
-        if (!name)
-            return;
-        if (workFolders.some(f => f.label.toLowerCase() === name.toLowerCase()))
-            return;
-        setWorkFoldersState(p => [...p, { key: "wf_" + uid(), label: name }]);
-    };
-    const removeWorkFolder = (key) => {
-        setWorkFoldersState(p => p.filter(f => f.key !== key));
-        // Items tagged with the removed folder fall back to general Work.
-        setProjects(p => p.map(pr => (pr.area === key ? { ...pr, area: "work" } : pr)));
-        setNotes(p => p.map(n => (n.area === key ? { ...n, area: "work" } : n)));
-    };
     const allTasks = SECS.flatMap(s => plan[s.key] || []);
     const doneTasks = allTasks.filter(t => t.done);
     const notDoneTasks = allTasks.filter(t => !t.done);
@@ -3799,17 +3783,6 @@ function App() {
             React.createElement("div", { style: { display: "flex", gap: 5, marginBottom: 10, flexWrap: "wrap", alignItems: "center" } },
                 React.createElement("span", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3, marginRight: 3 } }, "AREA"),
                 projectAreaFilters().map(f => React.createElement("button", { key: f.key, onClick: () => setProjectAreaFilter(f.key), style: isMobile ? C.pill(projectAreaFilter === f.key, true) : { ...C.pill(projectAreaFilter === f.key), fontSize: 10, padding: "4px 10px" } }, f.label))),
-            // Work folders manager — create/remove subsections inside Work
-            React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap", alignItems: "center", padding: "8px 10px", background: T.panel, border: `1.5px dashed ${T.lineSoft}`, borderRadius: 4 } },
-                React.createElement("i", { className: "ti ti-folders", style: { fontSize: 12, color: T.ink3 }, "aria-hidden": true }),
-                React.createElement("span", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3, marginRight: 2 } }, "Work folders"),
-                workFolders.length === 0 && React.createElement("span", { style: { fontSize: 11, color: T.ink3, fontStyle: "italic" } }, "None yet. Add one to organize work projects."),
-                workFolders.map(f => React.createElement("span", { key: f.key, style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#FFFFFF", background: T.ink, borderRadius: 2, padding: "3px 6px" } },
-                    f.label,
-                    React.createElement("button", { onClick: () => removeWorkFolder(f.key), title: `Remove ${f.label}`, style: { display: "inline-flex", background: "none", border: "none", color: "rgba(255,255,255,0.7)", cursor: "pointer", padding: 0, lineHeight: 1 } },
-                        React.createElement("i", { className: "ti ti-x", style: { fontSize: 11 }, "aria-hidden": true })))),
-                React.createElement("input", { value: newWorkFolder, onChange: e => setNewWorkFolder(e.target.value), onKeyDown: e => { if (e.key === "Enter") { e.preventDefault(); addWorkFolder(newWorkFolder); setNewWorkFolder(""); } }, placeholder: "New folder…", style: { fontSize: 11, padding: "4px 8px", background: T.panelAlt, border: `1.5px solid ${T.lineSoft}`, borderRadius: 3, color: T.ink, outline: "none", width: 120, marginLeft: "auto" } }),
-                React.createElement("button", { onClick: () => { addWorkFolder(newWorkFolder); setNewWorkFolder(""); }, disabled: !newWorkFolder.trim(), style: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", padding: "4px 10px", borderRadius: 3, border: "none", cursor: newWorkFolder.trim() ? "pointer" : "default", background: newWorkFolder.trim() ? T.ink : T.panelAlt, color: newWorkFolder.trim() ? "#FFFFFF" : T.ink3 } }, "Add")),
             // Two columns on desktop; on mobile the fixed-width rail (Sorter tip /
             // Overview / Sections) has nowhere to sit beside the project list
             // without crushing it, so it stacks below instead — same pattern as
