@@ -3200,9 +3200,10 @@ function App() {
         const total = reviewItems.length;
         // Fixed to the viewport (not absolute over the full-height page) so the
         // panel is immediately visible after a dump/capture no matter how far
-        // the user has scrolled — previously it rendered at the top of the
-        // document and had to be scrolled up to.
-        return (React.createElement("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 40, overflowY: "auto", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "2rem 1rem" } },
+        // the user has scrolled, and vertically centered in the viewport.
+        // overflowY:auto keeps it scroll-reachable on the rare screen too short
+        // to fit the whole panel.
+        return (React.createElement("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 40, overflowY: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem 1rem" } },
             React.createElement("div", { style: { width: "100%", maxWidth: 640, background: T.canvas, border: T.actionBorder, borderRadius: 6, boxShadow: "0 8px 32px rgba(0,0,0,0.18)", overflow: "hidden" } },
                 React.createElement("div", { style: { padding: "16px 22px 14px", borderBottom: `2px solid ${T.line}`, background: T.panel, display: "flex", alignItems: "center", gap: 10 } },
                     React.createElement("div", { style: { flex: 1 } },
