@@ -1,7 +1,7 @@
 {
   "name": "EVERYTHING.",
   "short_name": "EVERYTHING.",
-  "description": "A place to dump everything on your mind and let it sort itself into a day you can actually work from.",
+  "description": "A place to dump everything on your mind and sort it into a day you can actually work from.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
