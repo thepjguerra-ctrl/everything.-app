@@ -2229,7 +2229,11 @@ function App() {
     const allTasks = SECS.flatMap(s => plan[s.key] || []);
     const doneTasks = allTasks.filter(t => t.done);
     const notDoneTasks = allTasks.filter(t => !t.done);
-    const rollingForward = notDoneTasks.filter(t => (resetChoices[t.id] || "roll") === "roll");
+    // Both "roll" and "later" carry the task into the Carried Over list — LATER
+    // is a softer-intent label, not a different destination — so both count as
+    // carrying forward. Only "archive" (Drop It) is discarded.
+    const CARRY_FORWARD_CHOICES = new Set(["roll", "later"]);
+    const rollingForward = notDoneTasks.filter(t => CARRY_FORWARD_CHOICES.has(resetChoices[t.id] || "roll"));
     const todayStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
     // ── Routing helpers ───────────────────────────────────────────────────────
     function routeToProject(rawText) {
@@ -2520,7 +2524,7 @@ function App() {
     } setRolling(p => p.filter(x => x.id !== taskId)); }
     function keepRolling(taskId) { setRolling(p => p.map(t => t.id === taskId ? { ...t, rolledDays: (t.rolledDays || 0) + 1 } : t)); }
     function clearCompleted() { const done = SECS.flatMap(s => plan[s.key].filter(t => t.done)); setCompletedToday(prev => [...prev, ...done]); setPlan(prev => { const n = empty(); SECS.forEach(s => { n[s.key] = prev[s.key].filter(t => !t.done); }); return n; }); }
-    function handleReset() { autoBackupIfNeeded(); setResetCount(doneTasks.length); const toRoll = notDoneTasks.filter(t => (resetChoices[t.id] || "roll") === "roll"); setRolling(p => [...p, ...toRoll.map(t => ({ ...t, rolledDays: (t.rolledDays || 0) + 1, rolledFrom: "Yesterday" }))]); if (completedToday.length > 0) {
+    function handleReset() { autoBackupIfNeeded(); setResetCount(doneTasks.length); const toRoll = notDoneTasks.filter(t => CARRY_FORWARD_CHOICES.has(resetChoices[t.id] || "roll")); setRolling(p => [...p, ...toRoll.map(t => ({ ...t, rolledDays: (t.rolledDays || 0) + 1, rolledFrom: "Yesterday" }))]); if (completedToday.length > 0) {
         setDoneLog(prev => [...prev, { date: todayStr, tasks: completedToday }]);
         setCompletedToday([]);
     } setPlan(empty()); setTodayDump(""); setOrganized(false); setResetChoices({}); setResetDone(true); setTimeout(() => { setResetDone(false); setTab("today"); }, 2400); }
@@ -2992,7 +2996,7 @@ function App() {
             React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" } }, [
                 ["COMPLETED", doneTasks.length, false],
                 ["UNFINISHED", notDoneTasks.length, notDoneTasks.length > 0],
-                ["ROLLING FORWARD", rollCount, false],
+                ["CARRYING FORWARD", rollCount + laterCount, false],
             ].map(([label, n, isRed]) => (React.createElement("div", { key: label, style: { flex: 1, minWidth: 90, border: isRed && n > 0 ? `1.5px solid ${T.red}` : T.cardBorder, borderRadius: 4, padding: "10px 14px", background: T.panel, boxShadow: isRed && n > 0 ? `0 0 0 3px rgba(224,48,48,0.12)` : T.cardShadow } },
                 React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 900, fontSize: 30, lineHeight: 1, color: isRed && n > 0 ? T.red : T.ink } }, n),
                 React.createElement("div", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: T.ink3, marginTop: 4 } }, label))))),
@@ -3011,10 +3015,8 @@ function App() {
                     React.createElement("span", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", color: "#fff", background: T.ink, padding: "2px 8px", borderRadius: 2 } }, "UNFINISHED \u00b7 DECIDE"),
                     React.createElement("span", { className: "v3-red-tag" }, notDoneTasks.length),
                     notDoneTasks.length > 0 && (React.createElement("span", { style: { fontSize: 10, color: T.ink3, marginLeft: 2 } },
-                        rollCount > 0 && `${rollCount} rolling`,
-                        rollCount > 0 && laterCount > 0 && " · ",
-                        laterCount > 0 && `${laterCount} later`,
-                        (rollCount > 0 || laterCount > 0) && dropCount > 0 && " · ",
+                        (rollCount + laterCount) > 0 && `${rollCount + laterCount} carrying forward`,
+                        (rollCount + laterCount) > 0 && dropCount > 0 && " · ",
                         dropCount > 0 && `${dropCount} dropping`))),
                 React.createElement("div", { style: { border: T.cardBorder, borderRadius: 4, background: T.panel, boxShadow: T.cardShadow } }, notDoneTasks.map((t, i) => {
                     const choice = resetChoices[t.id] || "roll";
