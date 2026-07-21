@@ -26,6 +26,14 @@ site — not the main business identity.
 - Show diffs before finalizing a change so Pj can review what actually moved.
 - Direct conversational iteration — no relaying through other tools mid-task.
 
+## Data-safety rule — non-negotiable
+Any change that imports, uploads, or reads outside data into this app —
+including anything touching import/export, backup, or restore logic —
+must run the `pre-release-check` skill first, and must pass it before
+the change is applied. This exists because of a past full data-loss
+incident on this app. Do not skip this step even for a fix that looks
+small or self-contained.
+
 ## Known cleanup checklist (pre-release)
 - [ ] Remove hardcoded personal data from rewrite/soften tables
 - [ ] Update storage naming (localStorage keys) to be release-safe
