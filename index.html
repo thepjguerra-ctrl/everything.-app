@@ -2124,6 +2124,9 @@ function App() {
     const noteBodyRef = useRef(null);
     const pendingNoteFocusRef = useRef(false); // set true right after "New Note" so the body gets focus once it mounts
     const sentToTodayLockRef = useRef({}); // synchronous re-entrancy lock so a double-tap can't send the same idea twice before React re-renders
+    const noteSaveTimerRef = useRef(null); // debounce handle for live-saving the open note draft
+    const noteDraftRef = useRef(null); // always-current mirror of noteEditDraft, readable from timers/unload handlers
+    noteDraftRef.current = noteEditDraft;
     useEffect(() => {
         const el = noteBodyRef.current;
         if (!el)
@@ -2171,6 +2174,35 @@ function App() {
         vv.addEventListener("resize", onResize);
         return () => vv.removeEventListener("resize", onResize);
     }, [noteEditDraft]);
+    // Live-save the open note draft into the persisted notes record as it
+    // changes (debounced), so leaving via a nav tab — which does NOT call
+    // commitNoteDraft — can never lose typed content. This only ever UPSERTS;
+    // the "drop an empty note" cleanup stays at the explicit commit points
+    // (open/create/close) so clearing a note mid-edit doesn't yank it out from
+    // under the cursor.
+    useEffect(() => {
+        if (!noteEditDraft)
+            return;
+        if (noteSaveTimerRef.current)
+            clearTimeout(noteSaveTimerRef.current);
+        noteSaveTimerRef.current = setTimeout(() => { liveSaveNoteDraft(noteDraftRef.current); }, 400);
+        return () => { if (noteSaveTimerRef.current) { clearTimeout(noteSaveTimerRef.current); noteSaveTimerRef.current = null; } };
+    }, [noteEditDraft?.id, noteEditDraft?.title, noteEditDraft?.body, noteEditDraft?.area]);
+    // Safety net for the only window live-save can't cover on its own: the page
+    // being hidden or torn down mid-debounce (backgrounded tab, closed tab, iOS
+    // reclaiming Safari). React state updates can't flush through the normal
+    // save effect during unload, so this patches localStorage synchronously.
+    useEffect(() => {
+        const flush = () => {
+            if (noteSaveTimerRef.current) { clearTimeout(noteSaveTimerRef.current); noteSaveTimerRef.current = null; }
+            liveSaveNoteDraft(noteDraftRef.current); // keep in-memory notes coherent (matters when the page survives, e.g. tab re-shown)
+            flushNoteDraftToStorage();               // synchronous write that survives an actual teardown
+        };
+        const onVis = () => { if (typeof document !== "undefined" && document.visibilityState === "hidden") flush(); };
+        window.addEventListener("pagehide", flush);
+        document.addEventListener("visibilitychange", onVis);
+        return () => { window.removeEventListener("pagehide", flush); document.removeEventListener("visibilitychange", onVis); };
+    }, []);
     const [projectEditModal, setProjectEditModal] = useState(null); // project whose name/desc is being edited
     const [projectItemEdit, setProjectItemEdit] = useState(null); // { projId, secKey, item } being edited
     const [confirmState, setConfirmState] = useState(null); // in-app confirm dialog payload
@@ -2368,6 +2400,39 @@ function App() {
     // "open" loads a note into the draft, "commit" writes the draft back into
     // `notes`, and switching notes commits automatically first so nothing
     // typed is ever silently lost.
+    // Upsert the current draft into the persisted notes record WITHOUT the
+    // empty-note cleanup — used by the debounced live-save and the unload flush,
+    // where dropping an empty note the user is still inside would be wrong.
+    function liveSaveNoteDraft(draft) {
+        if (!draft)
+            return;
+        const t = (draft.title || "").trim();
+        setNotes(prev => prev.map(n => n.id === draft.id
+            ? { ...n, title: t || "Untitled", body: draft.body, area: draft.area, updatedAt: Date.now() }
+            : n));
+    }
+    // Synchronous localStorage patch for the open note draft. React's normal
+    // save effect can't run during pagehide/teardown, so on those events we
+    // write straight to storage instead of through setNotes.
+    function flushNoteDraftToStorage() {
+        const draft = noteDraftRef.current;
+        if (!draft)
+            return;
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw)
+                return;
+            const data = JSON.parse(raw);
+            if (!Array.isArray(data.notes))
+                return;
+            const t = (draft.title || "").trim();
+            data.notes = data.notes.map(n => n.id === draft.id
+                ? { ...n, title: t || "Untitled", body: draft.body, area: draft.area, updatedAt: Date.now() }
+                : n);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        }
+        catch (e) { /* private mode / quota / parse error — nothing else we can do at teardown */ }
+    }
     function commitNoteDraft() {
         if (!noteEditDraft)
             return;
