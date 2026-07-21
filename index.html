@@ -1261,20 +1261,6 @@ function parseCaptureEntries(entries, routeToProjectFn) {
     });
     return staged;
 }
-function generateBreak(task) {
-    const l = task.title.toLowerCase();
-    if (/website|site/.test(l))
-        return ["Choose one section of the site to improve", "Write the homepage headline", "Find 3 reference websites for inspiration"];
-    if (/photo|edit/.test(l))
-        return ["Select the best 10 shots", "Edit and color the first 5", "Export and file finished images"];
-    if (/location|scout/.test(l))
-        return ["List 5 possible location types", "Research 3 specific spots online", "Shortlist the top 2 and note why"];
-    if (/email|reply|client/.test(l))
-        return ["Draft a reply in 5 minutes", "Proof and send it", "Note any follow-up needed"];
-    if (/dentist|doctor|schedule/.test(l))
-        return ["Find the booking link or number", "Book the appointment", "Add it to your calendar now"];
-    return [`Define what "done" looks like`, "Write out the first step", "Block 30 minutes to start"];
-}
 // ── Widget & preset config ────────────────────────────────────────────────────
 const WM = {
     doFirst: { label: "Must Happen", icon: "ti-flame" },
@@ -1582,25 +1568,6 @@ function TaskModal({ task, onSave, onDelete, onClose }) {
                 React.createElement("button", { onClick: () => onSave({ ...task, title, section, notes, priority }), style: C.btnPrimary }, "Save"),
                 React.createElement("button", { onClick: () => onDelete(task.id), style: C.btnDanger },
                     React.createElement("i", { className: "ti ti-trash", style: { fontSize: 14 }, "aria-hidden": true })))));
-}
-function BreakModal({ data, onConfirm, onClose }) {
-    const isMobile = useIsMobile();
-    return React.createElement("div", { onClick: onClose, style: { position: "absolute", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 } },
-        React.createElement("div", { onClick: e => e.stopPropagation(), style: { width: 340, background: T.panel, border: T.actionBorder, borderRadius: 6, padding: "1.4rem", boxShadow: "0 8px 24px rgba(0,0,0,0.16)" } },
-            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 } },
-                React.createElement("span", { style: { fontFamily: FONT_CONDENSED, fontWeight: 900, fontSize: 18, textTransform: "uppercase", letterSpacing: "0.02em", color: T.ink } }, "Break It Down"),
-                React.createElement("button", { onClick: onClose, style: C.iBtn(isMobile) },
-                    React.createElement("i", { className: "ti ti-x", style: { fontSize: 14 } }))),
-            React.createElement("div", { style: { fontSize: 12.5, color: T.ink2, marginBottom: 12, padding: "9px 11px", background: T.panelAlt, borderLeft: `3px solid ${T.red}` } },
-                "\"",
-                data.task.title,
-                "\" could become:"),
-            data.subtasks.map((st, i) => React.createElement("div", { key: i, style: { display: "flex", gap: 9, padding: "8px 0", alignItems: "flex-start", borderBottom: i < data.subtasks.length - 1 ? `1px dashed ${T.lineSoft}` : "none" } },
-                React.createElement("span", { style: { fontSize: 11, color: T.red, width: 15, flexShrink: 0, marginTop: 1, fontWeight: 800 } }, i + 1),
-                React.createElement("span", { style: { fontSize: 13, color: T.ink, lineHeight: 1.4 } }, st))),
-            React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14 } },
-                React.createElement("button", { onClick: onConfirm, style: C.btnPrimary }, "Replace with these"),
-                React.createElement("button", { onClick: onClose, style: C.btnGhost }, "Cancel"))));
 }
 // ── Calendar event modal (outside App for stable reference) ──────────────────
 function CalendarEventModal({ event, onSave, onDelete, onClose }) {
@@ -2023,7 +1990,6 @@ function App() {
     // Transient state — not saved to localStorage
     const [tab, setTab] = useState("today");
     const [modal, setModal] = useState(null);
-    const [breakData, setBreakData] = useState(null);
     const [dumpInput, setDumpInput] = useState("");
     // ── Voice input, all App-level fields (Web Speech API, no server) ────────
     // One shared recognition session, routed by a field id, covers every
@@ -2488,8 +2454,6 @@ function App() {
         setOrganized(true);
     } setRolling(p => p.filter(x => x.id !== taskId)); }
     function keepRolling(taskId) { setRolling(p => p.map(t => t.id === taskId ? { ...t, rolledDays: (t.rolledDays || 0) + 1 } : t)); }
-    function confirmBreak() { if (!breakData)
-        return; const { task, subtasks } = breakData; setRolling(p => [...p.filter(t => t.id !== task.id), ...subtasks.map(st => mk(st, task.section, { rolledFrom: task.title.slice(0, 20) + "…" }))]); setBreakData(null); }
     function clearCompleted() { const done = SECS.flatMap(s => plan[s.key].filter(t => t.done)); setCompletedToday(prev => [...prev, ...done]); setPlan(prev => { const n = empty(); SECS.forEach(s => { n[s.key] = prev[s.key].filter(t => !t.done); }); return n; }); }
     function handleReset() { autoBackupIfNeeded(); setResetCount(doneTasks.length); const toRoll = notDoneTasks.filter(t => (resetChoices[t.id] || "roll") === "roll"); setRolling(p => [...p, ...toRoll.map(t => ({ ...t, rolledDays: (t.rolledDays || 0) + 1, rolledFrom: "Yesterday" }))]); if (completedToday.length > 0) {
         setDoneLog(prev => [...prev, { date: todayStr, tasks: completedToday }]);
@@ -2879,7 +2843,6 @@ function App() {
                             React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
                                 ActionBtn("ADD TO TODAY", () => rollingAction(task.id, "today"), { background: T.ink, color: "#fff" }),
                                 ActionBtn("KEEP ROLLING", () => keepRolling(task.id), { background: "transparent", color: T.ink, border: `1.5px solid ${T.line}` }),
-                                ActionBtn("BREAK IT UP", () => setBreakData({ task, subtasks: generateBreak(task) }), { background: T.red, color: "#fff" }),
                                 ActionBtn("LATER", () => rollingAction(task.id, "later"), { background: "transparent", color: T.ink3, border: `1.5px solid ${T.lineSoft}` }),
                                 ActionBtn("ARCHIVE", () => rollingAction(task.id, "archive"), { background: "transparent", color: T.ink3, border: `1.5px solid ${T.lineSoft}` }))))))),
                     freshItems.length > 0 && (React.createElement("div", null,
@@ -2902,7 +2865,6 @@ function App() {
                             React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
                                 ActionBtn("ADD TO TODAY", () => rollingAction(task.id, "today"), { background: T.ink, color: "#fff" }),
                                 ActionBtn("LATER", () => rollingAction(task.id, "later"), { background: "transparent", color: T.ink3, border: `1.5px solid ${T.lineSoft}` }),
-                                ActionBtn("BREAK IT UP", () => setBreakData({ task, subtasks: generateBreak(task) }), { background: "transparent", color: T.ink, border: `1.5px solid ${T.line}` }),
                                 ActionBtn("ARCHIVE", () => rollingAction(task.id, "archive"), { background: "transparent", color: T.ink3, border: `1.5px solid ${T.lineSoft}` })))))))),
                 React.createElement("div", { style: { width: 220, flexShrink: 0, display: "flex", flexDirection: "column", gap: 12 } },
                     React.createElement("div", { style: { border: T.cardBorder, borderRadius: 4, padding: "12px 14px", background: T.panel, boxShadow: T.cardShadow } },
@@ -2917,20 +2879,12 @@ function App() {
                                 i + 1,
                                 "."),
                             React.createElement("span", { style: { fontSize: 11.5, color: T.ink2, lineHeight: 1.45 } }, txt))))),
-                    React.createElement("div", { style: { border: `2px dashed ${T.line}`, borderRadius: 3, padding: "12px 14px", background: T.panel } },
-                        React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.1em", color: T.ink, marginBottom: 6 } }, "BREAK IT DOWN."),
-                        React.createElement("div", { style: { fontSize: 11.5, color: T.ink2, lineHeight: 1.55 } },
-                            "Tasks that keep rolling may be too big. Break them into smaller steps using the",
-                            " ",
-                            React.createElement("span", { style: { fontWeight: 700, color: T.red } }, "BREAK IT UP"),
-                            " button.")),
                     React.createElement("div", { style: { border: `1.5px dashed ${T.lineSoft}`, borderRadius: 3, padding: "10px 14px", background: T.panel } },
                         React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", color: T.ink3, marginBottom: 8 } }, "ACTIONS"),
                         [
                             ["ADD TO TODAY", "Pulls into today's Do First"],
                             ["KEEP ROLLING", "Stays here, age +1 tomorrow"],
                             ["LATER", "Moves to Later / Parked"],
-                            ["BREAK IT UP", "Splits into smaller steps"],
                             ["ARCHIVE", "Removes from all lists"],
                         ].map(([btn, desc]) => (React.createElement("div", { key: btn, style: { marginBottom: 7 } },
                             React.createElement("div", { style: { fontSize: 9.5, fontWeight: 700, fontFamily: FONT_CONDENSED, color: T.ink, letterSpacing: "0.06em" } }, btn),
@@ -4448,7 +4402,6 @@ function App() {
                 tab === "settings" && React.createElement(SettingsView, { modules, onToggleModule: toggleModule, bottomBarModule, onPickBottomBarModule: pickBottomBarModule, onReplayOnboarding: replayOnboarding })),
             modal && React.createElement(TaskModal, { task: modal, onSave: saveTask, onDelete: deleteTask, onClose: () => setModal(null) }),
             calModal && React.createElement(CalendarEventModal, { event: calModal, onSave: saveCalendarEvent, onDelete: deleteCalendarEvent, onClose: () => setCalModal(null) }),
-            breakData && React.createElement(BreakModal, { data: breakData, onConfirm: confirmBreak, onClose: () => setBreakData(null) }),
             ideaEditModal && React.createElement(IdeaEditModal, { idea: ideaEditModal, onSave: saveIdeaEdit, onDelete: deleteIdeaFromModal, onClose: () => setIdeaEditModal(null) }),
             projectEditModal && React.createElement(ProjectEditModal, { project: projectEditModal, onSave: saveProjectMeta, onClose: () => setProjectEditModal(null) }),
             projectItemEdit && React.createElement(ProjectItemEditModal, { item: projectItemEdit.item, onSave: (text) => saveProjectItemText(projectItemEdit.projId, projectItemEdit.secKey, projectItemEdit.item.id, text), onClose: () => setProjectItemEdit(null) }),
