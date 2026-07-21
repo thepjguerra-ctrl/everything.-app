@@ -2487,6 +2487,7 @@ function App() {
         setPlan(p => ({ ...p, later: [...p.later, { ...t, section: "later" }] }));
         setOrganized(true);
     } setRolling(p => p.filter(x => x.id !== taskId)); }
+    function keepRolling(taskId) { setRolling(p => p.map(t => t.id === taskId ? { ...t, rolledDays: (t.rolledDays || 0) + 1 } : t)); }
     function confirmBreak() { if (!breakData)
         return; const { task, subtasks } = breakData; setRolling(p => [...p.filter(t => t.id !== task.id), ...subtasks.map(st => mk(st, task.section, { rolledFrom: task.title.slice(0, 20) + "…" }))]); setBreakData(null); }
     function clearCompleted() { const done = SECS.flatMap(s => plan[s.key].filter(t => t.done)); setCompletedToday(prev => [...prev, ...done]); setPlan(prev => { const n = empty(); SECS.forEach(s => { n[s.key] = prev[s.key].filter(t => !t.done); }); return n; }); }
@@ -2877,7 +2878,7 @@ function App() {
                                 " days. Decide what it needs."),
                             React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
                                 ActionBtn("ADD TO TODAY", () => rollingAction(task.id, "today"), { background: T.ink, color: "#fff" }),
-                                ActionBtn("KEEP ROLLING", () => { }, { background: "transparent", color: T.ink, border: `1.5px solid ${T.line}` }),
+                                ActionBtn("KEEP ROLLING", () => keepRolling(task.id), { background: "transparent", color: T.ink, border: `1.5px solid ${T.line}` }),
                                 ActionBtn("BREAK IT UP", () => setBreakData({ task, subtasks: generateBreak(task) }), { background: T.red, color: "#fff" }),
                                 ActionBtn("LATER", () => rollingAction(task.id, "later"), { background: "transparent", color: T.ink3, border: `1.5px solid ${T.lineSoft}` }),
                                 ActionBtn("ARCHIVE", () => rollingAction(task.id, "archive"), { background: "transparent", color: T.ink3, border: `1.5px solid ${T.lineSoft}` }))))))),
