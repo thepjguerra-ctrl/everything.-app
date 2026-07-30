@@ -348,6 +348,14 @@ const AUTOBACKUP_KEY = "everything-last-autobackup";
 // Still mandatory now that import merges instead of replacing: an import that
 // can't write this snapshot is refused outright rather than run unprotected.
 const PRE_IMPORT_SNAPSHOT_KEY = "everything-pre-import-snapshot";
+// When the snapshot above was taken (ms since epoch, stored as a string) — a
+// separate key rather than wrapping the snapshot payload, so PRE_IMPORT_SNAPSHOT_KEY
+// stays the literal STORAGE_KEY value undoLastImport() writes straight back.
+// Without an expiry, the snapshot survives forever (cleared only by Undo or the
+// next import), permanently doubling this app's localStorage footprint for
+// anyone who never uses Undo.
+const PRE_IMPORT_SNAPSHOT_TS_KEY = "everything-pre-import-snapshot-ts";
+const PRE_IMPORT_SNAPSHOT_MAX_AGE_MS = 5 * 24 * 60 * 60 * 1000; // 5 days
 // Studio signature link in the sidebar footer.
 // TODO(release): replace with the real EVERYTHING. studio URL before shipping.
 const STUDIO_URL = "https://everything.studio";
@@ -1240,8 +1248,10 @@ function importAppData(file, onSuccess, onError) {
         let current = null;
         try {
             current = localStorage.getItem(STORAGE_KEY);
-            if (current)
+            if (current) {
                 localStorage.setItem(PRE_IMPORT_SNAPSHOT_KEY, current);
+                localStorage.setItem(PRE_IMPORT_SNAPSHOT_TS_KEY, String(Date.now()));
+            }
         }
         catch (snapErr) {
             console.warn("[everything] Could not snapshot pre-import state:", snapErr);
@@ -1285,9 +1295,33 @@ function importAppData(file, onSuccess, onError) {
 // ── Import undo ──────────────────────────────────────────────────────────────
 // The pre-import snapshot exists purely so a bad import can be walked back —
 // this is what actually uses it.
+function clearPreImportSnapshot() {
+    localStorage.removeItem(PRE_IMPORT_SNAPSHOT_KEY);
+    localStorage.removeItem(PRE_IMPORT_SNAPSHOT_TS_KEY);
+}
+// True once the snapshot has outlived PRE_IMPORT_SNAPSHOT_MAX_AGE_MS. A
+// snapshot with no timestamp (e.g. one written before this key existed) is
+// treated as fresh rather than expired — there's no age to judge it by, and
+// guessing "expired" would silently take away a legitimate Undo.
+function isPreImportSnapshotExpired() {
+    const ts = localStorage.getItem(PRE_IMPORT_SNAPSHOT_TS_KEY);
+    if (!ts)
+        return false;
+    return Date.now() - parseInt(ts, 10) > PRE_IMPORT_SNAPSHOT_MAX_AGE_MS;
+}
 function hasPreImportSnapshot() {
     try {
-        return !!localStorage.getItem(PRE_IMPORT_SNAPSHOT_KEY);
+        if (!localStorage.getItem(PRE_IMPORT_SNAPSHOT_KEY))
+            return false;
+        // Auto-expiry: an old snapshot is dead weight (it just doubles storage)
+        // and stops being a safe thing to restore to, so it's cleared the first
+        // time anything checks for it rather than lingering until the next
+        // import or an Undo click that will never come.
+        if (isPreImportSnapshotExpired()) {
+            clearPreImportSnapshot();
+            return false;
+        }
+        return true;
     }
     catch (e) {
         return false;
@@ -1302,11 +1336,15 @@ function hasPreImportSnapshot() {
 // Undo, on a later import) starts the cycle over.
 function undoLastImport() {
     try {
+        if (isPreImportSnapshotExpired()) {
+            clearPreImportSnapshot();
+            return false;
+        }
         const snap = localStorage.getItem(PRE_IMPORT_SNAPSHOT_KEY);
         if (!snap)
             return false;
         localStorage.setItem(STORAGE_KEY, snap);
-        localStorage.removeItem(PRE_IMPORT_SNAPSHOT_KEY);
+        clearPreImportSnapshot();
         return true;
     }
     catch (e) {
