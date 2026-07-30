@@ -342,9 +342,11 @@ const APP_VERSION = 1; // increment this when the data schema changes
 // last automatic Close-the-Day backup. Checked by autoBackupIfNeeded() so the
 // auto-export fires at most once per calendar day.
 const AUTOBACKUP_KEY = "everything-last-autobackup";
-// Snapshot of STORAGE_KEY taken immediately before an import overwrites it, so a
+// Snapshot of STORAGE_KEY taken immediately before an import writes to it, so a
 // bad import can be rolled back even if the user never made a manual backup.
 // Only ever holds the state from right before the most recent import attempt.
+// Still mandatory now that import merges instead of replacing: an import that
+// can't write this snapshot is refused outright rather than run unprotected.
 const PRE_IMPORT_SNAPSHOT_KEY = "everything-pre-import-snapshot";
 // Studio signature link in the sidebar footer.
 // TODO(release): replace with the real EVERYTHING. studio URL before shipping.
@@ -883,34 +885,367 @@ function looksLikeBackup(raw) {
         return false;
     return BACKUP_SHAPE_KEYS.some(key => Object.prototype.hasOwnProperty.call(raw, key));
 }
+// ── Import merge ─────────────────────────────────────────────────────────────
+// Importing a backup MERGES it into whatever is already saved here. It never
+// replaces, overwrites, or deletes anything that already exists on this device.
+// The whole point is carrying a phone export onto a laptop (or back) without
+// either side losing work.
+//
+// THE CENTRAL FACT that shapes every rule below: item ids come from a per-device
+// counter (`_id`, see uid()). Two devices that have both been used independently
+// WILL hand out the same numbers to completely unrelated items — phone note 412
+// and laptop note 412 are not the same note. So a matching id is NOT proof of
+// identity, and "the incoming one is newer, let it win" would quietly destroy a
+// real local note. Content is the only trustworthy identity signal.
+//
+// Rules, per data type:
+//   • Item collections (plan.*, rolling, dumpItems, calendarEvents,
+//     completedToday, ideas, notes, lists, timeEntries, projects, and the items
+//     inside projects/lists):
+//       – identical to something already here (every field but `id` matches) →
+//         skipped, so re-importing the same file adds nothing;
+//       – otherwise appended. If its id is already taken locally, it is appended
+//         under a fresh id — BOTH items are kept, the local one untouched.
+//     Duplicate-content items are matched by count, so an import holding two
+//     identical entries against one local copy adds exactly one.
+//   • projects / lists: additionally paired on (id AND name). A matched pair is
+//     treated as the same project/list and its child items merge by the rules
+//     above; the local parent's own fields (desc, area, done, createdAt) win, so
+//     nothing local is rewritten. An id match with a different name is NOT a
+//     pair — it comes in as a separate project/list.
+//   • doneLog: has no ids; merged on content alone.
+//   • workFolders: merged by `key`; the local label wins on a key clash.
+//   • modules / introDismissed / onboardingSeen: OR'd. A module that is on in
+//     either copy ends up on, so merged data is never stranded behind a nav item
+//     that is switched off here.
+//   • runningTimer: local wins. Adopted from the import only if none is running
+//     here.
+//   • todayDump: the local text is kept as-is; the imported text is appended
+//     below a marker line, and only if the local text doesn't already contain it
+//     (so a repeat import doesn't stack copies).
+//   • widgets, activePreset, bottomBarModule, organized: local always wins.
+//     These are this device's layout and preferences, not portable content.
+//
+// Net effect: an import can only ever ADD. That is what makes the operation
+// safe to repeat and safe to run against a device holding newer work.
+function stableStringify(v) {
+    if (v === null || typeof v !== "object")
+        return JSON.stringify(v) === undefined ? "null" : JSON.stringify(v);
+    if (Array.isArray(v))
+        return "[" + v.map(stableStringify).join(",") + "]";
+    return "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") + "}";
+}
+// Identity fingerprint for an item: everything about it EXCEPT its id. Two items
+// with the same fingerprint are the same item as far as the user can tell, no
+// matter what number each device happened to file it under.
+function contentKey(item) {
+    if (!item || typeof item !== "object")
+        return stableStringify(item);
+    const copy = {};
+    Object.keys(item).forEach(k => { if (k !== "id") copy[k] = item[k]; });
+    return stableStringify(copy);
+}
+// Every numeric id anywhere in a state object, including ids nested inside
+// projects, lists and doneLog entries. Used both to keep merged ids unique and
+// to advance the uid counter past everything that was loaded.
+function collectIds(state) {
+    const out = [];
+    if (!state || typeof state !== "object")
+        return out;
+    const push = arr => {
+        if (Array.isArray(arr))
+            arr.forEach(x => { if (x && typeof x.id === "number") out.push(x.id); });
+    };
+    const plan = state.plan && typeof state.plan === "object" ? state.plan : {};
+    Object.values(plan).forEach(push);
+    [state.rolling, state.dumpItems, state.calendarEvents, state.completedToday,
+        state.ideas, state.notes, state.timeEntries, state.projects, state.lists].forEach(push);
+    (Array.isArray(state.projects) ? state.projects : []).forEach(p => {
+        const secs = p && p.sections && typeof p.sections === "object" ? p.sections : {};
+        Object.values(secs).forEach(push);
+    });
+    (Array.isArray(state.lists) ? state.lists : []).forEach(l => push(l && l.items));
+    (Array.isArray(state.doneLog) ? state.doneLog : []).forEach(entry => push(entry && entry.tasks));
+    return out;
+}
+// Hands out ids for incoming items. An incoming id is kept when it is free, and
+// swapped for a brand-new one when it is already spoken for here — so an id
+// clash costs the incoming item its number, never the local item its existence.
+function makeIdSpace(localState, incomingState) {
+    const used = new Set(collectIds(localState));
+    const all = collectIds(localState).concat(collectIds(incomingState));
+    let next = all.length ? Math.max(400, ...all) : 400;
+    return {
+        // Reserve and return a usable id for an incoming item.
+        take(id) {
+            if (typeof id === "number" && !used.has(id)) {
+                used.add(id);
+                return id;
+            }
+            do {
+                next += 1;
+            } while (used.has(next));
+            used.add(next);
+            return next;
+        },
+        highWater() { return next; },
+    };
+}
+// Union of two item arrays. Local order and local objects are preserved exactly;
+// only genuinely-new items are appended.
+function mergeItemArray(localArr, incomingArr, ids) {
+    const merged = Array.isArray(localArr) ? localArr.slice() : [];
+    const incoming = Array.isArray(incomingArr) ? incomingArr : [];
+    // Count local copies per fingerprint, then let each incoming item "use up"
+    // one. Three local copies of the same thing absorb three incoming copies —
+    // a fourth is a real addition.
+    const available = new Map();
+    merged.forEach(x => {
+        const k = contentKey(x);
+        available.set(k, (available.get(k) || 0) + 1);
+    });
+    let added = 0;
+    incoming.forEach(item => {
+        if (!item || typeof item !== "object")
+            return;
+        const k = contentKey(item);
+        const have = available.get(k) || 0;
+        if (have > 0) {
+            available.set(k, have - 1);
+            return; // already here — skip, no duplicate
+        }
+        merged.push({ ...item, id: ids.take(item.id) });
+        added += 1;
+    });
+    return { merged, added };
+}
+// Same union, for collections with no ids at all (doneLog).
+function mergeIdlessArray(localArr, incomingArr) {
+    const merged = Array.isArray(localArr) ? localArr.slice() : [];
+    const incoming = Array.isArray(incomingArr) ? incomingArr : [];
+    const available = new Map();
+    merged.forEach(x => {
+        const k = stableStringify(x);
+        available.set(k, (available.get(k) || 0) + 1);
+    });
+    let added = 0;
+    incoming.forEach(entry => {
+        const k = stableStringify(entry);
+        const have = available.get(k) || 0;
+        if (have > 0) {
+            available.set(k, have - 1);
+            return;
+        }
+        merged.push(entry);
+        added += 1;
+    });
+    return { merged, added };
+}
+// JSON-encoded so an id/name boundary can never be forged by a name that
+// happens to contain the separator.
+function containerPairKey(c) {
+    return stableStringify([c && c.id, c && c.name]);
+}
+// Projects and lists are containers: matching one to its counterpart lets the
+// items inside merge, instead of the user ending up with two cards of the same
+// name. `childKeys` is null for lists (one flat `items` array) or the section
+// key list for projects.
+function mergeContainerArray(localArr, incomingArr, ids, childKeys) {
+    const merged = (Array.isArray(localArr) ? localArr : []).map(p => (childKeys
+        ? { ...p, sections: { ...(p.sections || {}) } }
+        : { ...p, items: Array.isArray(p.items) ? p.items.slice() : [] }));
+    const incoming = Array.isArray(incomingArr) ? incomingArr : [];
+    const identical = new Map();
+    merged.forEach(p => {
+        const k = contentKey(p);
+        identical.set(k, (identical.get(k) || 0) + 1);
+    });
+    // Pair on id AND name. Requiring the name too keeps two unrelated containers
+    // that merely collided on a counter value from being fused together.
+    const pairIndex = new Map();
+    merged.forEach((p, i) => { pairIndex.set(containerPairKey(p), i); });
+    let added = 0, childrenAdded = 0;
+    incoming.forEach(item => {
+        if (!item || typeof item !== "object")
+            return;
+        const key = contentKey(item);
+        const have = identical.get(key) || 0;
+        if (have > 0) {
+            identical.set(key, have - 1);
+            return; // byte-for-byte already here
+        }
+        const pair = pairIndex.get(containerPairKey(item));
+        if (pair !== undefined) {
+            const target = merged[pair];
+            if (childKeys) {
+                childKeys.forEach(sec => {
+                    const r = mergeItemArray(target.sections[sec], (item.sections || {})[sec], ids);
+                    target.sections[sec] = r.merged;
+                    childrenAdded += r.added;
+                });
+            }
+            else {
+                const r = mergeItemArray(target.items, item.items, ids);
+                target.items = r.merged;
+                childrenAdded += r.added;
+            }
+            return; // local parent fields left exactly as they were
+        }
+        // A container this device has never seen. Its own id and every child id
+        // get checked against what's already in use before it lands.
+        const clone = { ...item, id: ids.take(item.id) };
+        if (childKeys) {
+            const sections = {};
+            childKeys.forEach(sec => {
+                sections[sec] = (Array.isArray((item.sections || {})[sec]) ? item.sections[sec] : [])
+                    .map(c => ({ ...c, id: ids.take(c.id) }));
+            });
+            clone.sections = sections;
+        }
+        else {
+            clone.items = (Array.isArray(item.items) ? item.items : []).map(c => ({ ...c, id: ids.take(c.id) }));
+        }
+        merged.push(clone);
+        added += 1;
+    });
+    return { merged, added, childrenAdded };
+}
+// Work folders are identified by their stable `key`, not by a counter, so this
+// is a plain union. A key present on both sides keeps the local label.
+function mergeWorkFolders(localArr, incomingArr) {
+    const merged = (Array.isArray(localArr) ? localArr : []).slice();
+    const seen = new Set(merged.map(f => f && f.key));
+    (Array.isArray(incomingArr) ? incomingArr : []).forEach(f => {
+        if (!f || typeof f.key !== "string" || seen.has(f.key))
+            return;
+        seen.add(f.key);
+        merged.push(f);
+    });
+    return merged;
+}
+const IMPORT_DUMP_MARKER = "\n\n— from imported backup —\n";
+// Builds the merged state from two ALREADY-NORMALISED states. Pure: it reads
+// both and returns a new object plus a count of what it added. `localState` is
+// never mutated in place.
+function mergeAppState(localState, incomingState) {
+    const ids = makeIdSpace(localState, incomingState);
+    let addedCount = 0;
+    const plan = {};
+    PLAN_SECTION_KEYS.forEach(key => {
+        const r = mergeItemArray(localState.plan && localState.plan[key], incomingState.plan && incomingState.plan[key], ids);
+        plan[key] = r.merged;
+        addedCount += r.added;
+    });
+    const simple = {};
+    ["rolling", "dumpItems", "calendarEvents", "completedToday", "ideas", "notes", "timeEntries"].forEach(key => {
+        const r = mergeItemArray(localState[key], incomingState[key], ids);
+        simple[key] = r.merged;
+        addedCount += r.added;
+    });
+    const projects = mergeContainerArray(localState.projects, incomingState.projects, ids, PROJECT_SECTION_KEYS);
+    addedCount += projects.added + projects.childrenAdded;
+    const lists = mergeContainerArray(localState.lists, incomingState.lists, ids, null);
+    addedCount += lists.added + lists.childrenAdded;
+    const doneLog = mergeIdlessArray(localState.doneLog, incomingState.doneLog);
+    addedCount += doneLog.added;
+    // Modules OR'd on: a module switched off here but carrying imported data
+    // would otherwise hide that data behind a missing nav item.
+    const modules = {};
+    MODULE_META.forEach(m => {
+        modules[m.key] = !!((localState.modules || {})[m.key] || (incomingState.modules || {})[m.key]);
+    });
+    // The dump is free text, not an item — appended rather than merged, and only
+    // when this device doesn't already have that text somewhere in the box.
+    const localDump = typeof localState.todayDump === "string" ? localState.todayDump : "";
+    const incomingDump = typeof incomingState.todayDump === "string" ? incomingState.todayDump.trim() : "";
+    let todayDump = localDump;
+    if (incomingDump && !localDump.includes(incomingDump))
+        todayDump = localDump ? localDump + IMPORT_DUMP_MARKER + incomingDump : incomingDump;
+    const merged = {
+        ...localState,
+        appVersion: APP_VERSION,
+        plan,
+        ...simple,
+        projects: projects.merged,
+        lists: lists.merged,
+        doneLog: doneLog.merged,
+        workFolders: mergeWorkFolders(localState.workFolders, incomingState.workFolders),
+        modules,
+        todayDump,
+        introDismissed: !!(localState.introDismissed || incomingState.introDismissed),
+        onboardingSeen: !!(localState.onboardingSeen || incomingState.onboardingSeen),
+        // A timer already running on this device is live data — never displace it.
+        runningTimer: localState.runningTimer || incomingState.runningTimer || null,
+        // Layout and preferences below stay exactly as this device has them.
+        widgets: localState.widgets,
+        activePreset: localState.activePreset,
+        bottomBarModule: localState.bottomBarModule,
+        organized: localState.organized,
+    };
+    // Keep the live uid counter above every id now in play, so the next item
+    // created after an import can't collide with something just merged in.
+    _id = Math.max(_id, ids.highWater());
+    return { merged, addedCount };
+}
 function importAppData(file, onSuccess, onError) {
     const reader = new FileReader();
     reader.onload = (e) => {
+        let parsed;
         try {
-            const parsed = JSON.parse(e.target.result);
-            if (!looksLikeBackup(parsed)) {
-                onError("That file doesn't look like an Everything. backup. Nothing was changed.");
-                return;
-            }
-            // Snapshot the current state before overwriting it, so this import can
-            // be undone even if the user never made a manual backup first.
-            try {
-                const current = localStorage.getItem(STORAGE_KEY);
-                if (current)
-                    localStorage.setItem(PRE_IMPORT_SNAPSHOT_KEY, current);
-            }
-            catch (snapErr) {
-                console.warn("[everything] Could not snapshot pre-import state:", snapErr);
-            }
-            // Run through migration so older backups (no appVersion, missing fields)
-            // are safely normalised before being stored.
-            const migrated = migrateAppState(parsed);
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-            onSuccess();
+            parsed = JSON.parse(e.target.result);
         }
         catch (err) {
             onError("Could not read that file. Make sure it's a valid Everything. backup (.json).");
+            return;
         }
+        if (!looksLikeBackup(parsed)) {
+            onError("That file doesn't look like an Everything. backup. Nothing was changed.");
+            return;
+        }
+        // Snapshot the current state before touching it. A merge only adds, but
+        // the snapshot stays mandatory: if it can't be written we stop rather
+        // than run any import without a rollback point behind it.
+        let current = null;
+        try {
+            current = localStorage.getItem(STORAGE_KEY);
+            if (current)
+                localStorage.setItem(PRE_IMPORT_SNAPSHOT_KEY, current);
+        }
+        catch (snapErr) {
+            console.warn("[everything] Could not snapshot pre-import state:", snapErr);
+            onError("Couldn't save a rollback copy of your current data, so the import was cancelled. Nothing was changed.");
+            return;
+        }
+        let merged, addedCount;
+        try {
+            const localRaw = current ? JSON.parse(current) : {};
+            // Register the union of both sides' Work folders BEFORE normalising
+            // either one — safeArea() validates against the live AREA_MAP, so
+            // without this an item tagged with a folder that only exists on the
+            // other device would silently lose its area.
+            const folders = mergeWorkFolders(localRaw.workFolders, parsed.workFolders);
+            const localState = migrateAppState({ ...localRaw, workFolders: folders });
+            const incomingState = migrateAppState({ ...parsed, workFolders: folders });
+            const result = mergeAppState(localState, incomingState);
+            merged = result.merged;
+            addedCount = result.addedCount;
+        }
+        catch (mergeErr) {
+            console.warn("[everything] Merge failed:", mergeErr);
+            onError("Something went wrong reading that backup, so nothing was imported. Your data is unchanged.");
+            return;
+        }
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+        }
+        catch (writeErr) {
+            console.warn("[everything] Could not save merged state:", writeErr);
+            // setItem is all-or-nothing, so the old value is still intact — but
+            // say so plainly instead of leaving the user guessing.
+            onError("There wasn't enough space in this browser to save the merged data. Nothing was changed — your existing data is still here.");
+            return;
+        }
+        onSuccess(addedCount);
     };
     reader.onerror = () => onError("File could not be read.");
     reader.readAsText(file);
@@ -919,18 +1254,12 @@ function clearSavedData() {
     localStorage.removeItem(STORAGE_KEY);
 }
 // Advance the uid counter past any IDs already in saved state so new items
-// never collide with loaded ones.
+// never collide with loaded ones. Uses collectIds so lists, list items, time
+// entries and completedToday are covered too — an import can leave high ids in
+// any of those, and a counter that ignored them would hand the next new item a
+// number something already merged in is using.
 function syncUidCounter(state) {
-    const allIds = [
-        ...Object.values(state.plan || {}).flat(),
-        ...(state.rolling || []),
-        ...(state.dumpItems || []),
-        ...(state.calendarEvents || []),
-        ...(state.projects || []).flatMap(p => Object.values(p.sections || {}).flat()),
-        ...(state.projects || []),
-        ...(state.ideas || []),
-        ...(state.notes || []),
-    ].map(x => x?.id).filter(id => typeof id === "number");
+    const allIds = collectIds(state);
     if (allIds.length)
         _id = Math.max(_id, ...allIds);
 }
@@ -1908,7 +2237,13 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
         const file = e.target.files[0];
         if (!file)
             return;
-        importAppData(file, () => { setImportStatus("success"); setImportMsg("Backup loaded. Reloading app…"); setTimeout(() => window.location.reload(), 1200); }, (msg) => { setImportStatus("error"); setImportMsg(msg); });
+        importAppData(file, (addedCount) => {
+            setImportStatus("success");
+            setImportMsg(addedCount > 0
+                ? `Merged in ${addedCount} new item${addedCount !== 1 ? "s" : ""}. Nothing was replaced. Reloading app…`
+                : "Everything in that backup was already here — nothing added, nothing changed. Reloading app…");
+            setTimeout(() => window.location.reload(), 1600);
+        }, (msg) => { setImportStatus("error"); setImportMsg(msg); });
         e.target.value = "";
     }
     function handleClear() {
@@ -1942,6 +2277,9 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
                     React.createElement("i", { className: "ti ti-upload", style: { fontSize: 15 }, "aria-hidden": true }),
                     "Import a backup")),
             React.createElement("div", { style: { fontSize: 10.5, color: T.ink3, marginTop: 10, lineHeight: 1.5, display: "flex", alignItems: "flex-start", gap: 5 } },
+                React.createElement("i", { className: "ti ti-git-merge", style: { fontSize: 12, marginTop: 1, flexShrink: 0 }, "aria-hidden": true }),
+                "Importing adds to what's here — it never replaces it. Anything already on this device stays exactly as it is, and items the backup shares with it aren't duplicated. Safe to run in either direction between two devices, and safe to run twice."),
+            React.createElement("div", { style: { fontSize: 10.5, color: T.ink3, marginTop: 6, lineHeight: 1.5, display: "flex", alignItems: "flex-start", gap: 5 } },
                 React.createElement("i", { className: "ti ti-shield-check", style: { fontSize: 12, marginTop: 1, flexShrink: 0 }, "aria-hidden": true }),
                 "Imports are checked before anything is saved, and your current data is snapshotted first — so a bad file can always be undone."),
             React.createElement("div", { style: { fontSize: 10.5, color: T.ink3, marginTop: 6, lineHeight: 1.5, display: "flex", alignItems: "flex-start", gap: 5 } },
