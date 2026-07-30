@@ -679,7 +679,11 @@ const MODULE_META = [
     { key: "ideas", label: "Ideas", icon: "ti-bulb", default: false },
     { key: "projects", label: "Projects", icon: "ti-folder", default: false },
     { key: "lists", label: "Lists", icon: "ti-list-check", default: false },
-    { key: "timeclock", label: "Time Clock", icon: "ti-clock-play", default: false },
+    // locked: true — not ready for anyone but Pj to see yet. Settings shows this
+    // as "Coming Soon" instead of a normal On/Off toggle until unlocked with
+    // TIMECLOCK_PIN (see below). Once unlocked it's just a normal module —
+    // `locked` only affects what Settings renders, not runtime behavior.
+    { key: "timeclock", label: "Time Clock", icon: "ti-clock-play", default: false, locked: true },
 ];
 function normalizeModules(raw) {
     const src = (raw && typeof raw === "object") ? raw : {};
@@ -688,6 +692,34 @@ function normalizeModules(raw) {
         out[m.key] = typeof src[m.key] === "boolean" ? src[m.key] : m.default;
     });
     return out;
+}
+// ── Locked module PIN gate (currently just Time Clock) ────────────────────────
+// A locked module isn't a security boundary — this is client-side source, so
+// the PIN is always readable by anyone who looks. It exists only so the
+// feature isn't stumbled into by someone else using the app before it's ready.
+// The unlock, once entered correctly, is remembered on THIS device via its own
+// localStorage key — deliberately separate from STORAGE_KEY (the app-data
+// blob), so it survives "Clear all saved data" exactly like AUTOBACKUP_KEY and
+// PRE_IMPORT_SNAPSHOT_KEY already do, and is never bundled into an exported
+// backup or merged in from an imported one (it describes this device, not
+// portable content — same category as widgets/activePreset in mergeAppState).
+const TIMECLOCK_PIN = "1634";
+const TIMECLOCK_UNLOCK_KEY = "everything-timeclock-unlocked";
+function hasTimeclockUnlock() {
+    try {
+        return localStorage.getItem(TIMECLOCK_UNLOCK_KEY) === "1";
+    }
+    catch (e) {
+        return false;
+    }
+}
+function persistTimeclockUnlock() {
+    try {
+        localStorage.setItem(TIMECLOCK_UNLOCK_KEY, "1");
+    }
+    catch (e) {
+        console.warn("[everything] Could not persist Time Clock unlock:", e);
+    }
 }
 // ── migrateAppState ───────────────────────────────────────────────────────────
 // Takes any raw parsed JSON object (any version, any age) and returns a fully
@@ -2260,7 +2292,7 @@ function WidgetCard({ w, customize, onHide, onToggleSize, onDragStart, onDragOve
 // ── SettingsView — defined OUTSIDE App so it has a stable reference ──────────
 // (Components with their own hooks must live outside App to avoid remounting
 //  on every App render, which would cause inputs to lose focus.)
-function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBarModule, onReplayOnboarding }) {
+function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBarModule, onReplayOnboarding, timeclockUnlocked, onUnlockTimeclock }) {
     const [importStatus, setImportStatus] = useState(null);
     const [importMsg, setImportMsg] = useState("");
     const [confirmClear, setConfirmClear] = useState(false);
@@ -2273,6 +2305,23 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
     const [confirmUndo, setConfirmUndo] = useState(false);
     const [undoStatus, setUndoStatus] = useState(null);
     const [undoMsg, setUndoMsg] = useState("");
+    // Inline PIN entry for a locked module (currently just Time Clock) —
+    // opened by tapping its "Coming Soon" pill, same inline-expand shape as
+    // the Undo/Clear confirmations above.
+    const [pinEntryOpen, setPinEntryOpen] = useState(false);
+    const [pinValue, setPinValue] = useState("");
+    const [pinError, setPinError] = useState(false);
+    function submitPin() {
+        if (onUnlockTimeclock(pinValue)) {
+            setPinEntryOpen(false);
+            setPinValue("");
+            setPinError(false);
+        }
+        else {
+            setPinError(true);
+            setPinValue("");
+        }
+    }
     const fileInputRef = useRef(null);
     function handleImport(e) {
         const file = e.target.files[0];
@@ -2387,17 +2436,42 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
         // ── Modules — toggle optional sidebar sections ───────────────────────────
         React.createElement("span", { style: C.lbl }, "Modules"),
         React.createElement("div", { style: { fontSize: 12, color: T.ink3, marginBottom: 12, lineHeight: 1.5 } }, "Add or remove sections from the sidebar. Today, Dump, Calendar, and Settings are always shown. On mobile, one of these can also sit in the bottom bar instead of “More” — pick which."),
-        MODULE_META.map(m => React.createElement("div", { key: m.key, style: { ...C.refCard, marginBottom: 8, display: "flex", flexDirection: "column", gap: 8 } },
-            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
-                React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 9, fontSize: 13.5, color: T.ink } },
-                    React.createElement("i", { className: `ti ${m.icon}`, style: { fontSize: 15, color: T.ink3 }, "aria-hidden": true }),
-                    m.label),
-                React.createElement("button", { onClick: () => onToggleModule(m.key), role: "switch", "aria-checked": !!modules[m.key], style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 999, cursor: "pointer", fontSize: 11, fontWeight: 700, border: `1.5px solid ${modules[m.key] ? T.ink : T.lineSoft}`, background: modules[m.key] ? T.ink : "transparent", color: modules[m.key] ? "#FFFFFF" : T.ink3, transition: "all .12s" } },
-                    React.createElement("i", { className: `ti ${modules[m.key] ? "ti-check" : "ti-plus"}`, style: { fontSize: 11 }, "aria-hidden": true }),
-                    modules[m.key] ? "On" : "Off")),
-            modules[m.key] && React.createElement("button", { onClick: () => onPickBottomBarModule(m.key), role: "switch", "aria-checked": bottomBarModule === m.key, style: { alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontWeight: 700, border: `1.5px solid ${bottomBarModule === m.key ? T.red : T.lineSoft}`, background: bottomBarModule === m.key ? "rgba(224,48,48,0.08)" : "transparent", color: bottomBarModule === m.key ? T.red : T.ink3, transition: "all .12s" } },
-                React.createElement("i", { className: `ti ${bottomBarModule === m.key ? "ti-square-check" : "ti-square"}`, style: { fontSize: 11 }, "aria-hidden": true }),
-                bottomBarModule === m.key ? "In bottom bar" : "Show in bottom bar")))));
+        MODULE_META.map(m => {
+            // Locked (currently just Time Clock, pre-unlock) gets a "Coming
+            // Soon" pill instead of the normal On/Off switch. Tapping it opens
+            // inline PIN entry right there — same shape as Undo/Clear above —
+            // rather than a native prompt(), so it matches the rest of Settings.
+            const isLocked = m.locked && !timeclockUnlocked;
+            return React.createElement("div", { key: m.key, style: { ...C.refCard, marginBottom: 8, display: "flex", flexDirection: "column", gap: 8 } },
+                React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+                    React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 9, fontSize: 13.5, color: T.ink } },
+                        React.createElement("i", { className: `ti ${m.icon}`, style: { fontSize: 15, color: T.ink3 }, "aria-hidden": true }),
+                        m.label),
+                    isLocked
+                        ? React.createElement("button", {
+                            onClick: () => { setPinEntryOpen(o => !o); setPinError(false); setPinValue(""); }, role: "button", "aria-expanded": pinEntryOpen,
+                            style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 999, cursor: "pointer", fontSize: 11, fontWeight: 700, border: `1.5px dashed ${T.lineSoft}`, background: "transparent", color: T.ink3 }
+                        },
+                            React.createElement("i", { className: "ti ti-lock", style: { fontSize: 11 }, "aria-hidden": true }),
+                            "Coming Soon")
+                        : React.createElement("button", { onClick: () => onToggleModule(m.key), role: "switch", "aria-checked": !!modules[m.key], style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 999, cursor: "pointer", fontSize: 11, fontWeight: 700, border: `1.5px solid ${modules[m.key] ? T.ink : T.lineSoft}`, background: modules[m.key] ? T.ink : "transparent", color: modules[m.key] ? "#FFFFFF" : T.ink3, transition: "all .12s" } },
+                            React.createElement("i", { className: `ti ${modules[m.key] ? "ti-check" : "ti-plus"}`, style: { fontSize: 11 }, "aria-hidden": true }),
+                            modules[m.key] ? "On" : "Off")),
+                isLocked && pinEntryOpen && React.createElement("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 } },
+                    React.createElement("input", {
+                        type: "tel", inputMode: "numeric", pattern: "[0-9]*", autoFocus: true, maxLength: 4, placeholder: "4-digit PIN", value: pinValue,
+                        onChange: e => { setPinValue(e.target.value.replace(/\D/g, "").slice(0, 4)); setPinError(false); },
+                        onKeyDown: e => { if (e.key === "Enter")
+                                submitPin(); },
+                        style: { width: 96, fontSize: 13, letterSpacing: "0.25em", textAlign: "center", padding: "6px 9px", background: T.panelAlt, border: `1.5px solid ${pinError ? "#c0392b" : T.lineSoft}`, borderRadius: 3, color: T.ink, outline: "none" }
+                    }),
+                    React.createElement("button", { onClick: submitPin, disabled: pinValue.length !== 4, style: { padding: "6px 14px", borderRadius: 4, cursor: pinValue.length === 4 ? "pointer" : "default", fontSize: 11, fontWeight: 700, border: "none", background: pinValue.length === 4 ? T.ink : T.lineSoft, color: pinValue.length === 4 ? "#FFFFFF" : T.ink3 } }, "Unlock"),
+                    React.createElement("button", { onClick: () => { setPinEntryOpen(false); setPinValue(""); setPinError(false); }, style: { padding: "6px 14px", borderRadius: 4, cursor: "pointer", fontSize: 11, fontWeight: 600, background: "transparent", color: T.ink2, border: `1px solid ${T.line}` } }, "Cancel")),
+                isLocked && pinEntryOpen && pinError && React.createElement("div", { style: { fontSize: 10.5, color: "#c0392b" } }, "Incorrect PIN."),
+                !isLocked && modules[m.key] && React.createElement("button", { onClick: () => onPickBottomBarModule(m.key), role: "switch", "aria-checked": bottomBarModule === m.key, style: { alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontWeight: 700, border: `1.5px solid ${bottomBarModule === m.key ? T.red : T.lineSoft}`, background: bottomBarModule === m.key ? "rgba(224,48,48,0.08)" : "transparent", color: bottomBarModule === m.key ? T.red : T.ink3, transition: "all .12s" } },
+                    React.createElement("i", { className: `ti ${bottomBarModule === m.key ? "ti-square-check" : "ti-square"}`, style: { fontSize: 11 }, "aria-hidden": true }),
+                    bottomBarModule === m.key ? "In bottom bar" : "Show in bottom bar"));
+        })));
 }
 // ── Idea edit modal (outside App for stable reference) ───────────────────────
 function IdeaEditModal({ idea, onSave, onDelete, onClose }) {
@@ -2672,6 +2746,12 @@ function App() {
     const [widgets, setWidgets] = useState(() => S.widgets ?? PRESETS.balanced.ws);
     const [activePreset, setActivePreset] = useState(() => S.activePreset ?? "balanced");
     const [modules, setModules] = useState(() => normalizeModules(S.modules));
+    // Whether Time Clock's PIN has been entered correctly on this device — see
+    // hasTimeclockUnlock/persistTimeclockUnlock. Lives outside `modules`/S
+    // entirely (its own localStorage key, not part of the app-data blob), so a
+    // fresh read on mount is the correct source of truth, same reasoning as
+    // SettingsView's canUndo.
+    const [timeclockUnlocked, setTimeclockUnlocked] = useState(() => hasTimeclockUnlock());
     const [bottomBarModule, setBottomBarModule] = useState(() => S.bottomBarModule ?? "notes");
     const [introDismissed, setIntroDismissed] = useState(() => S.introDismissed ?? false);
     // onboardingSeen persists across reloads (stops the walkthrough auto-opening
@@ -3387,6 +3467,20 @@ function App() {
         setModules(prev => ({ ...prev, [key]: !prev[key] }));
         if (turningOff && tab === key)
             setTab("today");
+    }
+    // Checks the entered PIN against a locked module's gate. On success,
+    // persists the unlock (so it's not asked for again on this device) and
+    // turns the module on immediately — entering the right PIN IS the "turn
+    // this on" action, not a separate step before the normal toggle appears.
+    // Returns true/false so the PIN-entry UI knows whether to clear itself or
+    // show an error.
+    function unlockTimeclock(pin) {
+        if (pin !== TIMECLOCK_PIN)
+            return false;
+        persistTimeclockUnlock();
+        setTimeclockUnlocked(true);
+        setModules(prev => ({ ...prev, timeclock: true }));
+        return true;
     }
     // The optional modules (see OPTIONAL_MODULE_KEYS) share ONE mobile bottom-bar
     // slot, symmetrically — picking one clears any previous pick automatically
@@ -5557,6 +5651,14 @@ function App() {
     // hiding it would strand rolled tasks behind a count with nowhere to go.
     // The rest are genuinely optional modules gated by `modules`.
     const CORE_NAV_KEYS = ["today", "dump", "calendar", "rolling", "done", "reset", "settings"];
+    // A locked module (currently just Time Clock) only counts as "on" for
+    // nav/tab purposes once its PIN has actually been entered on THIS device —
+    // even if modules.timeclock arrived as true via a merged import from an
+    // already-unlocked device (mergeAppState ORs module flags, by design, so
+    // toggled-on content follows you between devices; the PIN gate deliberately
+    // lives outside that — see TIMECLOCK_UNLOCK_KEY — specifically so an import
+    // can't be used to skip it).
+    const effectiveModules = { ...modules, timeclock: modules.timeclock && timeclockUnlocked };
     const NAV = [
         { key: "today", icon: "ti-layout-dashboard", label: "Today" },
         { key: "dump", icon: "ti-brain", label: "Dump" },
@@ -5571,7 +5673,7 @@ function App() {
         { key: "lists", icon: "ti-list-check", label: "Lists", badge: lists.length || undefined },
         { key: "timeclock", icon: "ti-clock-play", label: "Time Clock" },
         { key: "settings", icon: "ti-settings", label: "Settings" },
-    ].filter(n => CORE_NAV_KEYS.includes(n.key) || modules[n.key]);
+    ].filter(n => CORE_NAV_KEYS.includes(n.key) || effectiveModules[n.key]);
     // Mobile bottom bar + "More" sheet both just pull from NAV by key, via
     // MOBILE_NAV_CONFIG — so they automatically inherit NAV's labels, icons,
     // badges, and the same module-visibility filter above. Reordering the
@@ -5579,7 +5681,7 @@ function App() {
     // The optional modules share one bar slot: whichever bottomBarModule names
     // (if that module is actually on) takes it; the other optional modules —
     // and this one too, if it's off or unset — fall into the sheet like before.
-    const barModuleKey = bottomBarModule && modules[bottomBarModule] ? bottomBarModule : null;
+    const barModuleKey = bottomBarModule && effectiveModules[bottomBarModule] ? bottomBarModule : null;
     const mobileBarItems = [...MOBILE_NAV_CONFIG.bar, ...(barModuleKey ? [barModuleKey] : [])].map(key => NAV.find(n => n.key === key)).filter(Boolean);
     const mobileSheetItems = [...OPTIONAL_MODULE_KEYS.filter(k => k !== barModuleKey), ...MOBILE_NAV_CONFIG.sheet].map(key => NAV.find(n => n.key === key)).filter(Boolean);
     const mobileActiveInSheet = mobileSheetItems.some(n => n.key === tab);
@@ -5717,8 +5819,8 @@ function App() {
                 tab === "reset" && ResetView(),
                 tab === "projects" && ProjectsView(),
                 tab === "lists" && ListsView(),
-                tab === "timeclock" && TimeClockView(),
-                tab === "settings" && React.createElement(SettingsView, { modules, onToggleModule: toggleModule, bottomBarModule, onPickBottomBarModule: pickBottomBarModule, onReplayOnboarding: replayOnboarding })),
+                tab === "timeclock" && effectiveModules.timeclock && TimeClockView(),
+                tab === "settings" && React.createElement(SettingsView, { modules, onToggleModule: toggleModule, bottomBarModule, onPickBottomBarModule: pickBottomBarModule, onReplayOnboarding: replayOnboarding, timeclockUnlocked, onUnlockTimeclock: unlockTimeclock })),
             modal && React.createElement(TaskModal, { task: modal, onSave: saveTask, onDelete: deleteTask, onClose: () => setModal(null) }),
             calModal && React.createElement(CalendarEventModal, { event: calModal, onSave: saveCalendarEvent, onDelete: deleteCalendarEvent, onClose: () => setCalModal(null) }),
             ideaEditModal && React.createElement(IdeaEditModal, { idea: ideaEditModal, onSave: saveIdeaEdit, onDelete: deleteIdeaFromModal, onClose: () => setIdeaEditModal(null) }),
