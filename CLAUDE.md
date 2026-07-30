@@ -53,6 +53,6 @@ small or self-contained.
 - Any monetization, accounts, or analytics — this is a free give-away tool.
 
 ## Release intent
-Built to hand to real people first (sisters, roommate), who can edit it
+Built to hand to early testers first — real people who can edit it
 themselves to fit their own needs. Optimize for "easy to fork and modify,"
 not "polished SaaS product."
