@@ -1250,6 +1250,38 @@ function importAppData(file, onSuccess, onError) {
     reader.onerror = () => onError("File could not be read.");
     reader.readAsText(file);
 }
+// ── Import undo ──────────────────────────────────────────────────────────────
+// The pre-import snapshot exists purely so a bad import can be walked back —
+// this is what actually uses it.
+function hasPreImportSnapshot() {
+    try {
+        return !!localStorage.getItem(PRE_IMPORT_SNAPSHOT_KEY);
+    }
+    catch (e) {
+        return false;
+    }
+}
+// SINGLE USE BY DESIGN: a successful restore deletes the snapshot in the same
+// breath it's applied. The alternative — leave it in place so Undo can run
+// again — would let a stale snapshot silently erase whatever the user does
+// AFTER the first undo, which is worse than the failure mode this whole
+// mechanism exists to prevent. Every import takes a fresh snapshot anyway, so
+// nothing is lost by retiring this one; the next import (or the next click of
+// Undo, on a later import) starts the cycle over.
+function undoLastImport() {
+    try {
+        const snap = localStorage.getItem(PRE_IMPORT_SNAPSHOT_KEY);
+        if (!snap)
+            return false;
+        localStorage.setItem(STORAGE_KEY, snap);
+        localStorage.removeItem(PRE_IMPORT_SNAPSHOT_KEY);
+        return true;
+    }
+    catch (e) {
+        console.warn("[everything] Could not undo last import:", e);
+        return false;
+    }
+}
 function clearSavedData() {
     localStorage.removeItem(STORAGE_KEY);
 }
@@ -2232,6 +2264,15 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
     const [importStatus, setImportStatus] = useState(null);
     const [importMsg, setImportMsg] = useState("");
     const [confirmClear, setConfirmClear] = useState(false);
+    // Whether a pre-import snapshot actually exists right now. Read once on
+    // mount — every path that changes it (a successful import, a successful
+    // undo) already does a full window.location.reload(), which remounts this
+    // component and re-evaluates hasPreImportSnapshot() fresh. That keeps this
+    // a single source of truth instead of two copies that can drift apart.
+    const [canUndo] = useState(() => hasPreImportSnapshot());
+    const [confirmUndo, setConfirmUndo] = useState(false);
+    const [undoStatus, setUndoStatus] = useState(null);
+    const [undoMsg, setUndoMsg] = useState("");
     const fileInputRef = useRef(null);
     function handleImport(e) {
         const file = e.target.files[0];
@@ -2250,6 +2291,18 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
         clearSavedData();
         setConfirmClear(false);
         window.location.reload();
+    }
+    function handleUndo() {
+        setConfirmUndo(false);
+        if (undoLastImport()) {
+            setUndoStatus("success");
+            setUndoMsg("Restored to how things were right before your last import. Reloading app…");
+            setTimeout(() => window.location.reload(), 1400);
+        }
+        else {
+            setUndoStatus("error");
+            setUndoMsg("Couldn't restore that snapshot. Nothing was changed.");
+        }
     }
     const btnBase = { padding: "10px 16px", borderRadius: 4, cursor: "pointer", fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 7, border: "none" };
     return (React.createElement("div", { style: { padding: "1.6rem 1.8rem", maxWidth: 660 } },
@@ -2293,6 +2346,31 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
                 } },
                 React.createElement("i", { className: `ti ${importStatus === "success" ? "ti-circle-check" : "ti-alert-circle"}`, style: { fontSize: 13, marginRight: 6 }, "aria-hidden": true }),
                 importMsg)),
+            // ── Undo last import — only rendered when a real snapshot exists ──────
+            // (i.e. an import has actually run this session), never a dead/disabled
+            // control someone can click with nothing to undo.
+            canUndo && React.createElement("div", { style: { marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${T.lineSoft}` } },
+                !confirmUndo ? (React.createElement("div", null,
+                    React.createElement("button", { onClick: () => setConfirmUndo(true), style: { ...btnBase, background: "transparent", color: T.ink2, border: `1px solid ${T.line}`, fontSize: 12 } },
+                        React.createElement("i", { className: "ti ti-arrow-back-up", style: { fontSize: 14 }, "aria-hidden": true }),
+                        "Undo last import"),
+                    React.createElement("div", { style: { fontSize: 10.5, color: T.ink3, marginTop: 6, lineHeight: 1.5 } },
+                        "Restores your data to exactly how it was right before your last import. Works once — restoring clears this snapshot, so it can't be applied twice."))) : (
+                    React.createElement("div", { style: { padding: "12px 14px", borderRadius: 4, background: "#FFF8E8", border: "1px solid rgba(180,120,0,0.25)" } },
+                        React.createElement("div", { style: { fontSize: 12.5, color: "#8a5a00", marginBottom: 10, fontWeight: 500, lineHeight: 1.5 } },
+                            "This undoes your last import and anything you've done since — back to exactly how things were right before it ran. It only works once: after restoring, this snapshot is cleared."),
+                        React.createElement("div", { style: { display: "flex", gap: 8 } },
+                            React.createElement("button", { onClick: handleUndo, style: { ...btnBase, background: "#8a5a00", color: "#fff", fontSize: 12 } },
+                                React.createElement("i", { className: "ti ti-arrow-back-up", style: { fontSize: 13 }, "aria-hidden": true }),
+                                "Yes, restore it"),
+                            React.createElement("button", { onClick: () => setConfirmUndo(false), style: { ...btnBase, background: "transparent", color: T.ink2, border: `1px solid ${T.line}`, fontSize: 12 } }, "Cancel"))))),
+            undoStatus && (React.createElement("div", { style: { fontSize: 12, padding: "8px 11px", borderRadius: 8, marginTop: 12,
+                    background: undoStatus === "success" ? "#F0FAF4" : "#FFF0F0",
+                    color: undoStatus === "success" ? "#1A6636" : "#c0392b",
+                    border: `1px solid ${undoStatus === "success" ? "rgba(26,102,54,0.2)" : "#f5c6c6"}`,
+                } },
+                React.createElement("i", { className: `ti ${undoStatus === "success" ? "ti-circle-check" : "ti-alert-circle"}`, style: { fontSize: 13, marginRight: 6 }, "aria-hidden": true }),
+                undoMsg)),
             React.createElement("div", { style: { marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${T.lineSoft}` } },
                 !confirmClear ? (React.createElement("button", { onClick: () => setConfirmClear(true), style: { ...btnBase, background: "transparent", color: T.ink3, border: `1px solid ${T.line}`, fontSize: 12 } },
                     React.createElement("i", { className: "ti ti-trash", style: { fontSize: 14 }, "aria-hidden": true }),
