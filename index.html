@@ -1383,7 +1383,7 @@ function smartClean(raw) {
         dayChip = dayChip.charAt(0).toUpperCase() + dayChip.slice(1).toLowerCase();
     // Time range e.g. "10:30 to about 6 or 7"
     const timeRangeMatch = t.match(/\b(\d{1,2}(?::\d{2})?)\s*(?:to about|to|[-–])\s*(?:about\s+)?(\d{1,2}(?:(?::\d{2})?\s*(?:or\s+\d+)?)?)\s*(?:am|pm)?\b/i);
-    const simpleTimeMatch = t.match(/\b(\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm))\b/i);
+    const simpleTimeMatch = t.match(/\b\d{1,2}:\d{2}\s*(?:am|pm)?\b|\b\d{1,2}\s*(?:am|pm)\b/i);
     const timeChip = timeRangeMatch ? timeRangeMatch[0] : (simpleTimeMatch ? simpleTimeMatch[0] : null);
     // Scheduled event detection (has a person/subject + activity)
     const isScheduledEvent = /\b(shoot with|meeting with|session with|call with|working with|work with|interview with|dinner with|lunch with|coffee with|breakfast with|drinks with|hang(?:ing)? out with|date with|movie with)\s+\w+/i.test(t)
@@ -1429,8 +1429,11 @@ function smartClean(raw) {
         cleaned = cleaned.replace(/^(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)\s*(morning|afternoon|evening|night)?\s*[:\-–]\s*/i, "");
         // Strip all day names inline (and an orphaned "on/this/next" before them,
         // or a deadline preposition — "submit the invoice by Friday" must lose
-        // "by Friday" as a unit, not leave "by" dangling mid-sentence).
-        cleaned = cleaned.replace(/\b(?:(?:by|before|due(?:\s+by)?|no\s+later\s+than)\s+)?(?:(?:on|this|next)\s+)?(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '');
+        // "by Friday" as a unit, not leave "by" dangling mid-sentence. A "to be"
+        // copula directly ahead of that preposition — "taxes ARE due Monday" —
+        // has to go with it too, or the day-strip leaves the copula stranded
+        // with nothing to modify: "Taxes are").
+        cleaned = cleaned.replace(/\b(?:(?:(?:is|are|was|were)\s+)?(?:by|before|due(?:\s+by)?|no\s+later\s+than)\s+)?(?:(?:on|this|next)\s+)?(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '');
         // Strip time-of-day qualifiers
         cleaned = cleaned.replace(/\b(morning|afternoon|evening|night)\b\s*:?\s*/gi, '');
         // Strip a full time RANGE first, with any "from/at/between" that opens it.
