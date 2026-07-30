@@ -3381,7 +3381,7 @@ function App() {
         // ── upcoming + unscheduled ─────────────────────────────────────────────
         const upcoming = resolved
             .flatMap(({ev,dates}) => dates.map(d => ({ev, date:d})))
-            .filter(({date}) => { const diff=(date-todayDate)/86400000; return diff>=0 && diff<=14; })
+            .filter(({date}) => { const diff=(date-todayDate)/86400000; return diff>=0 && diff<=3; })
             .sort((a,b) => a.date-b.date);
         const unplaced = calendarEvents.filter(ev => resolveToDate(ev.dayLabel).length===0);
 
@@ -3530,9 +3530,9 @@ function App() {
                         React.createElement("button", {onClick:goToday, style:{fontSize:9.5,color:T.red,background:"none",border:`1px solid rgba(224,48,48,0.3)`,borderRadius:2,cursor:"pointer",padding:"2px 10px",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em"}}, "Today")
                     )
                 ),
-                // next 14 days
+                // next 3 days
                 React.createElement("div", {style:{border:T.cardBorder,borderRadius:4,padding:"10px 12px",background:T.panel,boxShadow:T.cardShadow}},
-                    React.createElement("div", {style:{fontFamily:FONT_CONDENSED,fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.1em",color:T.ink3,marginBottom:8}}, "Next 14 Days"),
+                    React.createElement("div", {style:{fontFamily:FONT_CONDENSED,fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.1em",color:T.ink3,marginBottom:8}}, "Next 3 Days"),
                     upcoming.length===0 && React.createElement("div",{style:{fontSize:11,color:T.ink3,fontStyle:"italic"}},"Nothing scheduled."),
                     upcoming.map(({ev,date},i) => {
                         const isT = date.getTime()===todayDate.getTime();
@@ -3691,7 +3691,7 @@ function App() {
                 })
             ),
             // Main content + right rail. Two columns on desktop; on mobile the
-            // fixed-width rail (mini calendar / Next 14 Days / unscheduled count)
+            // fixed-width rail (mini calendar / Next 3 Days / unscheduled count)
             // has nowhere to sit beside the day agenda without crushing it, so it
             // stacks below instead — same pattern as Today's widgets, Notes, and
             // the Projects list/rail.
