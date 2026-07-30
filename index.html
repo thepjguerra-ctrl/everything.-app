@@ -1407,31 +1407,53 @@ function smartClean(raw) {
     cleaned = cleaned.replace(/\s+(and\s+)?how\s+to\s+(do\s+)?(it|that)\s*$/i, "");
     cleaned = cleaned.replace(/\s+(i\s+think|i\s+guess|or\s+something|or\s+whatever|you\s+know)\s*$/i, "");
     // For calendar-bound items (has date/time OR is a scheduled event), strip day/time from label
+    let reasonClause = "";
     if (isScheduledEvent || dayChip || timeChip) {
+        // A trailing subordinate clause ("…Tuesday so the studio holds our
+        // booking") is the user's reasoning, not part of an event title. Hold it
+        // aside so the day/time scrubbing below only rewrites the MAIN clause,
+        // then hand it back to the caller, which re-attaches it unless the
+        // clause was actually captured as calendar notes. Scrubbing straight
+        // through it used to mangle it ("…is that afternoon" → "…is that") or
+        // drop it with no trace.
+        const reasonM = cleaned.match(/(?:,\s*|\s+)\b(?:so|because|since|cause|while|unless|in\s+case)\b\s+\S.*$/i);
+        if (reasonM) {
+            reasonClause = " " + reasonM[0].trim().replace(/^,\s*/, "").replace(/\s+/g, " ");
+            cleaned = cleaned.slice(0, reasonM.index);
+        }
         if (dayRangeMatch) {
             cleaned = cleaned.replace(new RegExp('\\bfrom\\s+' + dayRangeMatch[0].replace(/\s+to\s+/i, '\\s+to\\s+') + '\\b', 'i'), '');
             cleaned = cleaned.replace(new RegExp('\\b' + dayRangeMatch[0].replace(/\s+to\s+/i, '\\s+to\\s+') + '\\b', 'i'), '');
         }
         // Strip "DAY:" or "DAY TIME:" prefix pattern
         cleaned = cleaned.replace(/^(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)\s*(morning|afternoon|evening|night)?\s*[:\-–]\s*/i, "");
-        // Strip all day names inline (and an orphaned "on/this/next" before them)
-        cleaned = cleaned.replace(/\b(?:(?:on|this|next)\s+)?(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '');
+        // Strip all day names inline (and an orphaned "on/this/next" before them,
+        // or a deadline preposition — "submit the invoice by Friday" must lose
+        // "by Friday" as a unit, not leave "by" dangling mid-sentence).
+        cleaned = cleaned.replace(/\b(?:(?:by|before|due(?:\s+by)?|no\s+later\s+than)\s+)?(?:(?:on|this|next)\s+)?(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '');
         // Strip time-of-day qualifiers
         cleaned = cleaned.replace(/\b(morning|afternoon|evening|night)\b\s*:?\s*/gi, '');
+        // Strip a full time RANGE first, with any "from/at/between" that opens it.
+        // This has to beat the single-time strips below: those match the opening
+        // half ("from 10:30") and leave the rest of the range stranded in the
+        // title ("Shoot with Alex to about 6 or 7").
+        if (timeRangeMatch) {
+            const escRange = timeRangeMatch[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            cleaned = cleaned.replace(new RegExp('\\s*\\b(?:from|at|between)\\s+' + escRange, 'i'), '');
+            cleaned = cleaned.replace(timeRangeMatch[0], '');
+        }
         // Strip "at TIME"
         cleaned = cleaned.replace(/\s*\bat\s+\d{1,2}(?::\d{2})?(?:\s*(?:am|pm))?\b/gi, '');
         // Strip "from TIME to TIME"
         cleaned = cleaned.replace(/\bfrom\s+\d{1,2}(?::\d{2})?(?:\s*(?:to|[-–])\s*\d{1,2}(?::\d{2})?)?(?:\s*(?:am|pm))?\b/gi, '');
         // Strip bare times like "7:00"
         cleaned = cleaned.replace(/\b\d{1,2}:\d{2}(?:\s*(?:am|pm))?\b/gi, '');
-        if (timeRangeMatch)
-            cleaned = cleaned.replace(timeRangeMatch[0], '');
         // Strip "for most of the day", "as well", follow-on sentences
         cleaned = cleaned.replace(/,?\s+for\s+(most|much|the\s+rest)\s+of\s+the\s+day\.?/gi, '');
         // "I'm doing that Wednesday most likely as well" — follow-on context sentence
         cleaned = cleaned.replace(/\s+i'?m\s+doing\s+that\b.+$/gi, '');
         cleaned = cleaned.replace(/,?\s+as\s+well\.?$/gi, '');
-        cleaned = cleaned.replace(/,?\s+so\s+(i'?ll\s+)?(probably\s+)?\w.{0,40}$/gi, '');
+        // (the trailing "so …" clause was pulled out into reasonClause above)
         cleaned = cleaned.replace(/,?\s+(most\s+likely|probably|ideally|maybe|possibly|hopefully)\s*\.?$/gi, '');
         cleaned = cleaned.replace(/,?\s+not\s+sure\s+what\s+time\s+yet\.?$/gi, '');
         // Strip openers that may be exposed after day removal
@@ -1442,10 +1464,16 @@ function smartClean(raw) {
         if (/^with\s+\w/i.test(cleaned)) cleaned = 'Meet ' + cleaned;
     }
     cleaned = cleaned.trim().replace(/\s+/g, " ").replace(/^[,;.\s:]+/, "").replace(/[,;.\s]+$/, "");
+    // Scrubbing consumed the whole main clause ("Tuesday so they hold the
+    // booking") — fall back to the reason rather than dropping the item.
+    if ((!cleaned || cleaned.length < 3) && reasonClause) {
+        cleaned = reasonClause.trim();
+        reasonClause = "";
+    }
     if (!cleaned || cleaned.length < 3)
         return null;
     cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-    return { label: cleaned, dayChip, timeChip, isScheduledEvent, isContext };
+    return { label: cleaned, dayChip, timeChip, isScheduledEvent, isContext, reasonClause };
 }
 function priorityFor(sec, i) {
     if (sec === "focus")
@@ -1735,7 +1763,13 @@ function splitEventChunks(chunk) {
     const DAY_BOUND = new RegExp(
         "\\b([\\w'’./-]+)[ \\t]+(?=" + QC_DAY_WORD +
         "\\b(?:\\s+(?:at\\s+)?\\d{1,2}(?::\\d{2})?(?:\\s*(?:am|pm))?(?:\\s*(?:to|[-–])\\s*\\d{1,2}(?::\\d{2})?(?:\\s*(?:am|pm))?)?)?" +
-        "\\s+(?!(?:morning|afternoon|evening|night|am|pm|at|in|on|w/|with|around|about|before|after|during|until|till|to|through|thru|and|or|is|will|works|would|maybe|probably|most|likely|as|too|also)\\b)[A-Za-z])", "gi");
+        "\\s+(?!(?:morning|afternoon|evening|night|am|pm|at|in|on|w/|with|around|about|before|after|during|until|till|to|through|thru|from|and|or|is|will|works|would|maybe|probably|most|likely|as|too|also" +
+        // A subordinating conjunction after the weekday means the day CLOSES the
+        // clause before it ("send the invoice Tuesday so they hold the booking")
+        // rather than opening a new event. Splitting there orphaned the day and
+        // the whole reason clause into a fragment that cleaned away to nothing.
+        "|so|because|since|cause|while|unless|if|when|whenever|once|though|although|but" +
+        ")\\b)[A-Za-z])", "gi");
     const CONT = /^(?:on|this|next|by|until|till|to|through|thru|from|starting|every|each|for|the|of)$/i;
     pieces.forEach(piece => {
         // "dinner at 6 and movie at 9" → split on "and" when a time follows soon after
@@ -1761,11 +1795,20 @@ function extractCalendarMeta(raw, timeChip) {
     const timeTBD = /not\s+sure\s+what\s+time|time\s+not\s+confirmed|time\s+TBD|no\s+set\s+time/i.test(t);
     const resolvedTimeChip = timeTBD ? "TBD" : timeChip;
     let calNotes = "";
+    // True once the trailing "so …" clause has been folded into the notes, so
+    // the caller knows it is safe to drop from the title. The comma is optional
+    // here: it used to be required, while the title-side strip did not require
+    // it — that mismatch is what made "…Tuesday so the studio holds our booking"
+    // lose the clause from the title without ever recording it anywhere.
+    let reasonConsumed = false;
     // Extract "so I'll probably be shooting" → note
-    const soM = t.match(/,\s+so\s+(?:i'?ll\s+)?(?:probably\s+)?(?:be\s+)?(.{4,50}?)(?:[,.]|$)/i);
+    const soM = t.match(/,?\s+so\s+(?:i'?ll\s+)?(?:probably\s+)?(?:be\s+)?(.{4,50}?)(?:[,.]|$)/i);
     if (soM) {
         const n = soM[1].trim().replace(/^(also\s+|probably\s+)/i, "");
-        if (n.split(" ").length >= 2) calNotes = n.charAt(0).toUpperCase() + n.slice(1);
+        if (n.split(" ").length >= 2) {
+            calNotes = n.charAt(0).toUpperCase() + n.slice(1);
+            reasonConsumed = true;
+        }
     }
     // Tentative note
     if (calTentative && !calNotes) {
@@ -1773,7 +1816,7 @@ function extractCalendarMeta(raw, timeChip) {
         calNotes = w === "most likely" ? "Most likely" : (w === "ideally" || w === "hopefully") ? "Tentative" : w === "probably" ? "Probable" : "Maybe";
     }
     if (timeTBD) calNotes = "Time not confirmed";
-    return { calNotes, calTentative, resolvedTimeChip };
+    return { calNotes, calTentative, resolvedTimeChip, reasonConsumed };
 }
 // ── Carry-forward detector ─────────────────────────────────────────────────────
 // Finds intra-sentence carry-forward references like "I'm doing that Wednesday too"
@@ -1885,9 +1928,15 @@ function parseCaptureEntries(entries, routeToProjectFn) {
             const normalizedTime = normalizeEventTime(c.timeChip, raw);
             const meta = (dest === "calendar" || (dest === "project" && (c.dayChip || c.timeChip)))
                 ? extractCalendarMeta(raw, normalizedTime)
-                : { calNotes: "", calTentative: false, resolvedTimeChip: normalizedTime };
+                : { calNotes: "", calTentative: false, resolvedTimeChip: normalizedTime, reasonConsumed: false };
             let label = c.label;
             let calNotes = meta.calNotes;
+            // smartClean held the trailing reason clause out of the title so the
+            // day/time scrubbing couldn't mangle it. Drop it only when it has
+            // actually been recorded as calendar notes; otherwise it belongs
+            // back on the label, because nothing else is keeping it.
+            if (c.reasonClause && !meta.reasonConsumed)
+                label = label + c.reasonClause;
             // Deadline labels lose their day word in smartClean ("Submit the
             // invoice by Friday" → "Submit the invoice by") — drop the dangler.
             if (isDeadline)
