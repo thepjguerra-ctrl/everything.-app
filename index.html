@@ -395,6 +395,7 @@ function normalizeProject(proj) {
         desc: typeof proj.desc === "string" ? proj.desc : "",
         area: safeArea(proj.area), // null on older saves — safe fallback
         sections,
+        done: typeof proj.done === "boolean" ? proj.done : false,
         createdAt: typeof proj.createdAt === "number" ? proj.createdAt : Date.now(),
     };
 }
@@ -2688,17 +2689,18 @@ function App() {
             // Projects →" link is hidden when the Projects module is off, so it
             // never points at a section the user has removed from their nav.
             const viewLink = modules.projects ? React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", marginTop: 8 } }, React.createElement("button", { onClick: () => setTab("projects"), style: { fontSize: 10, color: T.ink2, background: "none", border: `1.5px solid ${T.lineSoft}`, borderRadius: 3, cursor: "pointer", padding: "2px 9px", fontWeight: 600 } }, "View Projects →")) : null;
-            if (projects.length === 0)
+            const activeProjects = projects.filter(proj => !proj.done);
+            if (activeProjects.length === 0)
                 return (React.createElement(React.Fragment, null,
                     React.createElement("div", { style: { fontSize: 11, color: T.ink3, padding: "4px 0" } }, "No active projects yet. Add them in the Projects tab."),
                     viewLink));
             return (React.createElement(React.Fragment, null,
-                React.createElement("div", null, projects.slice(0, 5).map((proj, i) => {
+                React.createElement("div", null, activeProjects.slice(0, 5).map((proj, i) => {
                     const allItems = Object.values(proj.sections || {}).flat();
                     const doneItems = allItems.filter(it => it.done).length;
                     const totalItems = allItems.length;
                     const pct = totalItems > 0 ? Math.round(doneItems / totalItems * 100) : 0;
-                    return (React.createElement("div", { key: proj.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: i < Math.min(projects.length, 5) - 1 ? `1px dashed ${T.lineSoft}` : "none" } },
+                    return (React.createElement("div", { key: proj.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: i < Math.min(activeProjects.length, 5) - 1 ? `1px dashed ${T.lineSoft}` : "none" } },
                         React.createElement("span", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 10, color: T.red, width: 16, flexShrink: 0 } }, i + 1),
                         React.createElement("span", { style: { flex: 1, fontSize: 12.5, fontWeight: 500, color: T.ink, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, proj.name),
                         React.createElement("span", { style: { fontSize: 10, color: T.ink3, flexShrink: 0 } }, doneItems, "/", totalItems),
@@ -3322,7 +3324,7 @@ function App() {
                             React.createElement("option", { value: "notes" }, "Notes"),
                             React.createElement("option", { value: "ideas" }, "Ideas Notebook"),
                             React.createElement("option", { value: "later" }, "Later"),
-                            projects.length > 0 && React.createElement("optgroup", { label: "\u2500\u2500 Projects \u2500\u2500" }, projects.flatMap(p => PROJECT_SECTIONS.map(s => (React.createElement("option", { key: `${p.id}:${s.key}`, value: `proj:${p.id}:${s.key}` }, p.name, " \u2192 ", s.label))))));
+                            projects.some(p => !p.done) && React.createElement("optgroup", { label: "\u2500\u2500 Projects \u2500\u2500" }, projects.filter(p => !p.done).flatMap(p => PROJECT_SECTIONS.map(s => (React.createElement("option", { key: `${p.id}:${s.key}`, value: `proj:${p.id}:${s.key}` }, p.name, " \u2192 ", s.label))))));
                         const removeBtn = React.createElement("button", { onClick: () => removeReviewItem(item.id), title: "Remove", style: { ...C.iBtn(isMobile), color: T.ink3, padding: isMobile ? "10px" : "5px", borderRadius: 3, border: `1.5px solid ${T.lineSoft}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
                             React.createElement("i", { className: "ti ti-x", style: { fontSize: 11 } }));
                         if (isCal) {
@@ -3790,7 +3792,7 @@ function App() {
         const name = newProjectName.trim();
         if (!name)
             return;
-        const proj = { id: uid(), name, desc: newProjectDesc.trim(), area: newProjectArea, sections: emptyProject(), createdAt: Date.now() };
+        const proj = { id: uid(), name, desc: newProjectDesc.trim(), area: newProjectArea, sections: emptyProject(), done: false, createdAt: Date.now() };
         setProjects(p => [...p, proj]);
         setNewProjectName("");
         setNewProjectDesc("");
@@ -3809,6 +3811,12 @@ function App() {
         setProjects(p => p.filter(x => x.id !== id));
         if (openProjectId === id)
             setOpenProjectId(null);
+    }
+    // Moves a project between the active list and Done — structurally separate
+    // sections in the list view (like Notes' pinned/archived split), not just a
+    // filter chip. Reversible with no confirmation, same as Notes' archive toggle.
+    function toggleProjectDone(id) {
+        setProjects(p => p.map(proj => proj.id === id ? { ...proj, done: !proj.done } : proj));
     }
     function addProjectItem(projId, secKey) {
         const text = (projectDraftInput[`${projId}-${secKey}`] || "").trim();
@@ -3868,6 +3876,44 @@ function App() {
                         } }, placeholder: `Add to ${sec.label.toLowerCase()}…`, style: { flex: 1, fontSize: 12.5, padding: "6px 10px", background: T.panelAlt, border: `1.5px solid ${T.lineSoft}`, borderRadius: 3, color: T.ink, outline: "none", fontFamily: "inherit" } }),
                     React.createElement("button", { onClick: () => addProjectItem(proj.id, sec.key), disabled: !draft.trim(), style: { padding: "6px 12px", borderRadius: 3, cursor: draft.trim() ? "pointer" : "default", fontSize: 11, fontWeight: 700, fontFamily: FONT_CONDENSED, textTransform: "uppercase", letterSpacing: "0.05em", background: draft.trim() ? T.ink : T.panelAlt, color: draft.trim() ? "#fff" : T.ink3, border: "none" } }, "ADD"))));
         }
+        // List-view card, shared by the active list and the Done section below it
+        // (isDone just dims it and swaps the chevron for a check — same card,
+        // same click-through into the detail view either way).
+        function ProjectCard(proj, isDone) {
+            const allItems = Object.values(proj.sections).flat();
+            const total = allItems.length;
+            const done = allItems.filter(it => it.done).length;
+            const pct = total > 0 ? Math.round(done / total * 100) : 0;
+            const isActive = proj.id === openProjectId;
+            return (React.createElement("button", { key: proj.id, onClick: () => setOpenProjectId(proj.id), style: {
+                    width: "100%", textAlign: "left", display: "block", cursor: "pointer",
+                    background: isDone ? T.panelAlt : T.panel, marginBottom: 8, padding: "12px 14px",
+                    border: isActive ? `1.5px solid ${T.red}` : T.cardBorder,
+                    borderRadius: 4,
+                    opacity: isDone ? 0.65 : 1,
+                    boxShadow: isActive ? `0 0 0 3px rgba(224,48,48,0.12), ${T.cardShadow}` : isDone ? "none" : T.cardShadow,
+                    transition: "box-shadow .1s, border-color .1s"
+                } },
+                React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: 10 } },
+                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+                            React.createElement("span", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 16, textTransform: "uppercase", letterSpacing: "0.02em", color: isActive ? T.red : T.ink, lineHeight: 1.1, wordBreak: "break-word", overflowWrap: "break-word" } }, proj.name),
+                            proj.area && React.createElement(AreaChip, { areaKey: proj.area })),
+                        proj.desc && (React.createElement("div", { style: { fontSize: 11.5, color: T.ink3, marginTop: 3, lineHeight: 1.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, proj.desc)),
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 8 } },
+                            React.createElement("div", { style: { flex: 1, maxWidth: 140, height: 3, background: T.lineSoft, borderRadius: 2, overflow: "hidden" } },
+                                React.createElement("div", { style: { height: "100%", width: `${pct}%`, background: isDone ? T.ink3 : isActive ? T.red : T.ink, borderRadius: 2 } })),
+                            React.createElement("span", { style: { fontSize: 9.5, fontWeight: 700, fontFamily: FONT_CONDENSED, color: T.ink3, letterSpacing: "0.06em" } }, total === 0 ? "EMPTY" : `${done}/${total}`),
+                            PROJECT_SECTIONS.map(sec => {
+                                const cnt = (proj.sections[sec.key] || []).length;
+                                if (!cnt)
+                                    return null;
+                                return React.createElement("span", { key: sec.key, style: { fontSize: 9, color: T.ink3 } },
+                                    sec.label[0],
+                                    cnt);
+                            }))),
+                    React.createElement("i", { className: `ti ${isDone ? "ti-check" : "ti-chevron-right"}`, style: { fontSize: 13, color: isActive ? T.red : T.ink3, flexShrink: 0, marginTop: 3 } }))));
+        }
         // ── PROJECT DETAIL VIEW ────────────────────────────────────────────────
         if (openProject) {
             const allItems = Object.values(openProject.sections).flat();
@@ -3880,7 +3926,9 @@ function App() {
                         React.createElement("i", { className: "ti ti-arrow-left", style: { fontSize: 12 } }),
                         " Back"),
                     React.createElement("div", { style: { flex: 1, minWidth: 0 } },
-                        React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 44, lineHeight: 0.9, color: T.ink, textTransform: "uppercase", letterSpacing: "0", wordBreak: "break-word" } }, openProject.name),
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
+                            React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 44, lineHeight: 0.9, color: T.ink, textTransform: "uppercase", letterSpacing: "0", wordBreak: "break-word" } }, openProject.name),
+                            openProject.done && React.createElement("span", { style: { fontSize: 10, fontWeight: 700, color: T.ink3, border: `1.5px solid ${T.lineSoft}`, padding: "3px 8px", borderRadius: 2, textTransform: "uppercase", letterSpacing: "0.08em", flexShrink: 0 } }, "✓ Done")),
                         openProject.desc && (React.createElement("div", { style: { fontSize: 12.5, color: T.ink2, marginTop: 5, lineHeight: 1.5 } }, openProject.desc)),
                         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginTop: 10 } },
                             React.createElement("div", { style: { flex: 1, maxWidth: 200, height: 4, background: T.lineSoft, borderRadius: 2, overflow: "hidden" } },
@@ -3891,7 +3939,10 @@ function App() {
                             React.createElement("span", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3 } }, "AREA"),
                             React.createElement(AreaPicker, { value: openProject.area ?? null, onChange: (k) => setProjectArea(openProject.id, k) })))),
                 PROJECT_SECTIONS.map(sec => SectionCard(openProject, sec)),
-                React.createElement("div", { style: { marginTop: 10, paddingTop: 14, borderTop: `1px dashed ${T.lineSoft}`, display: "flex", alignItems: "center", gap: 14 } },
+                React.createElement("div", { style: { marginTop: 10, paddingTop: 14, borderTop: `1px dashed ${T.lineSoft}`, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" } },
+                    React.createElement("button", { onClick: () => toggleProjectDone(openProject.id), style: { ...C.iBtn(isMobile), fontSize: 11, color: openProject.done ? T.ink2 : T.red, display: "inline-flex", alignItems: "center", gap: 5 } },
+                        React.createElement("i", { className: `ti ${openProject.done ? "ti-arrow-back-up" : "ti-circle-check"}`, style: { fontSize: 12 } }),
+                        openProject.done ? " Reopen project" : " Mark as done"),
                     React.createElement("button", { onClick: () => setProjectEditModal(openProject), style: { ...C.iBtn(isMobile), fontSize: 11, color: T.ink2, display: "inline-flex", alignItems: "center", gap: 5 } },
                         React.createElement("i", { className: "ti ti-pencil", style: { fontSize: 12 } }),
                         " Edit name & description"),
@@ -3900,6 +3951,9 @@ function App() {
                         " Delete this project"))));
         }
         // ── PROJECT LIST VIEW ──────────────────────────────────────────────────
+        const projAreaAll = projects.filter(proj => areaMatchesFilter(proj.area, projectAreaFilter));
+        const projActiveInArea = projAreaAll.filter(proj => !proj.done);
+        const projDoneInArea = projAreaAll.filter(proj => proj.done);
         return (React.createElement("div", { style: { padding: "1.6rem 1.8rem", maxWidth: 900, boxSizing: "border-box" } },
             React.createElement("div", { style: { marginBottom: 20 } },
                 React.createElement("div", { style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3, marginBottom: 4 } }, new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })),
@@ -3946,49 +4000,21 @@ function App() {
                     projects.length > 0 && !addingProject && (React.createElement("button", { onClick: () => setAddingProject(true), style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, width: "100%", padding: "12px 20px", marginBottom: 12, borderRadius: 3, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: FONT_CONDENSED, textTransform: "uppercase", letterSpacing: "0.07em", background: T.ink, color: "#fff", border: "none" } },
                         React.createElement("i", { className: "ti ti-plus", style: { fontSize: 12 } }),
                         " ADD PROJECT")),
-                    projects.filter(proj => areaMatchesFilter(proj.area, projectAreaFilter)).length === 0 && projects.length > 0 && projectAreaFilter !== "all" && (React.createElement("div", { style: { border: `1.5px dashed ${T.lineSoft}`, borderRadius: 3, padding: "1.6rem", textAlign: "center", fontSize: 12, color: T.ink3 } }, "No projects in this area yet.")),
-                    projects.filter(proj => areaMatchesFilter(proj.area, projectAreaFilter)).map(proj => {
-                        const allItems = Object.values(proj.sections).flat();
-                        const total = allItems.length;
-                        const done = allItems.filter(it => it.done).length;
-                        const pct = total > 0 ? Math.round(done / total * 100) : 0;
-                        const isActive = proj.id === openProjectId;
-                        return (React.createElement("button", { key: proj.id, onClick: () => setOpenProjectId(proj.id), style: {
-                                width: "100%", textAlign: "left", display: "block", cursor: "pointer",
-                                background: T.panel, marginBottom: 8, padding: "12px 14px",
-                                border: isActive ? `1.5px solid ${T.red}` : T.cardBorder,
-                                borderRadius: 4,
-                                boxShadow: isActive ? `0 0 0 3px rgba(224,48,48,0.12), ${T.cardShadow}` : T.cardShadow,
-                                transition: "box-shadow .1s, border-color .1s"
-                            } },
-                            React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: 10 } },
-                                React.createElement("div", { style: { flex: 1, minWidth: 0 } },
-                                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
-                                        React.createElement("span", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 16, textTransform: "uppercase", letterSpacing: "0.02em", color: isActive ? T.red : T.ink, lineHeight: 1.1, wordBreak: "break-word", overflowWrap: "break-word" } }, proj.name),
-                                        proj.area && React.createElement(AreaChip, { areaKey: proj.area })),
-                                    proj.desc && (React.createElement("div", { style: { fontSize: 11.5, color: T.ink3, marginTop: 3, lineHeight: 1.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, proj.desc)),
-                                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 8 } },
-                                        React.createElement("div", { style: { flex: 1, maxWidth: 140, height: 3, background: T.lineSoft, borderRadius: 2, overflow: "hidden" } },
-                                            React.createElement("div", { style: { height: "100%", width: `${pct}%`, background: isActive ? T.red : T.ink, borderRadius: 2 } })),
-                                        React.createElement("span", { style: { fontSize: 9.5, fontWeight: 700, fontFamily: FONT_CONDENSED, color: T.ink3, letterSpacing: "0.06em" } }, total === 0 ? "EMPTY" : `${done}/${total}`),
-                                        PROJECT_SECTIONS.map(sec => {
-                                            const cnt = (proj.sections[sec.key] || []).length;
-                                            if (!cnt)
-                                                return null;
-                                            return React.createElement("span", { key: sec.key, style: { fontSize: 9, color: T.ink3 } },
-                                                sec.label[0],
-                                                cnt);
-                                        }))),
-                                React.createElement("i", { className: "ti ti-chevron-right", style: { fontSize: 13, color: isActive ? T.red : T.ink3, flexShrink: 0, marginTop: 3 } }))));
-                    })),
+                    projAreaAll.length === 0 && projects.length > 0 && projectAreaFilter !== "all" && (React.createElement("div", { style: { border: `1.5px dashed ${T.lineSoft}`, borderRadius: 3, padding: "1.6rem", textAlign: "center", fontSize: 12, color: T.ink3 } }, "No projects in this area yet.")),
+                    projActiveInArea.map(proj => ProjectCard(proj, false)),
+                    // DONE — structurally separate from the active list (own header,
+                    // dimmed cards), same pattern as Notes' pinned/archived split.
+                    projDoneInArea.length > 0 && React.createElement(React.Fragment, null,
+                        React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.12em", color: T.ink3, marginTop: projActiveInArea.length > 0 ? 16 : 0, marginBottom: 8 } }, `DONE (${projDoneInArea.length})`),
+                        projDoneInArea.map(proj => ProjectCard(proj, true)))),
                 React.createElement("div", { style: { width: isMobile ? "100%" : 232, flexShrink: 0, display: "flex", flexDirection: "column", gap: 12, boxSizing: "border-box" } },
                     React.createElement("div", { style: { border: T.cardBorder, borderRadius: 4, padding: "12px 14px", background: T.panel, boxShadow: T.cardShadow } },
                         React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.1em", color: T.ink, marginBottom: 6 } }, "SORTER \u2192 PROJECTS"),
                         React.createElement("div", { style: { fontSize: 11.5, color: T.ink2, lineHeight: 1.55 } }, "Review & Sort can route notes and tasks directly into any project section."),
                         React.createElement("div", { style: { marginTop: 8, fontSize: 10, color: T.ink3, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em" } }, "Dump \u2192 Sort \u2192 Pick a project")),
-                    projects.length > 0 && (React.createElement("div", { style: { border: T.cardBorder, borderRadius: 4, padding: "12px 14px", background: T.panel, boxShadow: T.cardShadow } },
+                    projects.filter(proj => !proj.done).length > 0 && (React.createElement("div", { style: { border: T.cardBorder, borderRadius: 4, padding: "12px 14px", background: T.panel, boxShadow: T.cardShadow } },
                         React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.1em", color: T.ink3, marginBottom: 8 } }, "OVERVIEW"),
-                        projects.map(proj => {
+                        projects.filter(proj => !proj.done).map(proj => {
                             const allItems = Object.values(proj.sections).flat();
                             const total = allItems.length;
                             const done = allItems.filter(it => it.done).length;
