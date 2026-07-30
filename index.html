@@ -399,6 +399,29 @@ function normalizeProject(proj) {
         createdAt: typeof proj.createdAt === "number" ? proj.createdAt : Date.now(),
     };
 }
+// ── Lists (checklist-style lists — grocery lists, packing lists, etc.) ────────
+// Same item shape as a project item (id/text/done); a list is just a name plus
+// a flat array of them, with no sections.
+function normalizeListItem(item) {
+    if (!item || typeof item !== "object")
+        return null;
+    return {
+        id: typeof item.id === "number" ? item.id : uid(),
+        text: typeof item.text === "string" ? item.text : "",
+        done: typeof item.done === "boolean" ? item.done : false,
+    };
+}
+function normalizeList(raw) {
+    if (!raw || typeof raw !== "object")
+        return null;
+    return {
+        id: typeof raw.id === "number" ? raw.id : uid(),
+        name: typeof raw.name === "string" ? raw.name : "Unnamed List",
+        area: safeArea(raw.area),
+        items: Array.isArray(raw.items) ? raw.items.map(normalizeListItem).filter(Boolean) : [],
+        createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
+    };
+}
 function normalizeIdea(raw) {
     if (!raw || typeof raw !== "object")
         return null;
@@ -566,6 +589,7 @@ const MODULE_META = [
     { key: "notes", label: "Notes", icon: "ti-notes", default: false },
     { key: "ideas", label: "Ideas", icon: "ti-bulb", default: false },
     { key: "projects", label: "Projects", icon: "ti-folder", default: false },
+    { key: "lists", label: "Lists", icon: "ti-list-check", default: false },
 ];
 function normalizeModules(raw) {
     const src = (raw && typeof raw === "object") ? raw : {};
@@ -622,10 +646,12 @@ function migrateAppState(raw) {
         ideas: Array.isArray(raw.ideas) ? raw.ideas.map(normalizeIdea).filter(Boolean) : [],
         // notes: new in the Everything. release — older saves simply get []
         notes: Array.isArray(raw.notes) ? raw.notes.map(normalizeNote).filter(Boolean) : [],
+        // lists: new in this release — older saves simply get []
+        lists: Array.isArray(raw.lists) ? raw.lists.map(normalizeList).filter(Boolean) : [],
         // modules: which optional nav items are on; absent keys reconcile to canonical defaults
         modules: normalizeModules(raw.modules),
-        // bottomBarModule: which ONE optional module (Notes/Ideas/Projects) sits in the
-        // mobile bottom bar instead of the "More" sheet. "notes" is the default so
+        // bottomBarModule: which ONE optional module (Notes/Ideas/Projects/Lists) sits in
+        // the mobile bottom bar instead of the "More" sheet. "notes" is the default so
         // existing saves keep the bar exactly as it always was — Notes on the bar.
         bottomBarModule: MODULE_META.some(m => m.key === raw.bottomBarModule) ? raw.bottomBarModule : "notes",
         // introDismissed: whether the first-run "start in Dump" card has been closed
@@ -760,7 +786,7 @@ function autoBackupIfNeeded() {
 // reject files that parse as JSON but aren't actually a backup of this app
 // (migrateAppState is deliberately permissive about missing/malformed fields
 // within a real backup, so this check has to happen before it runs).
-const BACKUP_SHAPE_KEYS = ["plan", "rolling", "dumpItems", "calendarEvents", "projects", "completedToday", "doneLog", "widgets", "ideas", "notes", "modules", "workFolders", "appVersion", "activePreset", "organized", "todayDump", "introDismissed"];
+const BACKUP_SHAPE_KEYS = ["plan", "rolling", "dumpItems", "calendarEvents", "projects", "completedToday", "doneLog", "widgets", "ideas", "notes", "lists", "modules", "workFolders", "appVersion", "activePreset", "organized", "todayDump", "introDismissed"];
 function looksLikeBackup(raw) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
         return false;
@@ -1481,15 +1507,15 @@ function useIsMobile(breakpoint = MOBILE_BREAKPOINT) {
 // Mobile nav split — the FIXED nav keys that always sit on the bottom bar vs.
 // always in the "More" sheet. Keys must match NAV's `key` values (built further
 // down in App from CORE_NAV_KEYS + the module toggles). The optional modules
-// (Notes/Ideas/Projects) are NOT listed here — they share one remaining bar
-// slot, chosen in Settings via `bottomBarModule` (see App's mobileBarItems).
+// (Notes/Ideas/Projects/Lists) are NOT listed here — they share one remaining
+// bar slot, chosen in Settings via `bottomBarModule` (see App's mobileBarItems).
 const MOBILE_NAV_CONFIG = {
     bar: ["today", "dump", "calendar"],
     sheet: ["rolling", "done", "reset", "settings"],
 };
-// The three optional modules, in the order they should fall back into "More"
+// The optional modules, in the order they should fall back into "More"
 // when they aren't the one occupying the bottom-bar slot.
-const OPTIONAL_MODULE_KEYS = ["notes", "ideas", "projects"];
+const OPTIONAL_MODULE_KEYS = ["notes", "ideas", "projects", "lists"];
 // ── Shared styles ─────────────────────────────────────────────────────────────
 const C = {
     // Action card — solid border, soft shadow, slight offset for importance
@@ -2133,6 +2159,7 @@ function App() {
     const [doneLog, setDoneLog] = useState(() => S.doneLog ?? []);
     const [ideas, setIdeas] = useState(() => S.ideas ?? []);
     const [notes, setNotes] = useState(() => S.notes ?? []);
+    const [lists, setLists] = useState(() => S.lists ?? []);
     const [workFolders] = useState(() => S.workFolders ?? []); // saved folders kept for backward-compat area tagging; no longer user-editable
     // Keep the module-level AREAS/AREA_MAP mirror in sync every render so the
     // picker, chips and filters always reflect the current Work folders.
@@ -2248,6 +2275,10 @@ function App() {
     const [newProjectDesc, setNewProjectDesc] = useState("");
     const [openProjectId, setOpenProjectId] = useState(null);
     const [projectDraftInput, setProjectDraftInput] = useState({});
+    const [addingList, setAddingList] = useState(false);
+    const [newListName, setNewListName] = useState("");
+    const [openListId, setOpenListId] = useState(null);
+    const [listDraftInput, setListDraftInput] = useState({}); // keyed by listId — no sections, so one draft per list
     const [organizeStats, setOrganizeStats] = useState(null);
     const [reviewItems, setReviewItems] = useState(null);
     const [pendingDumpIds, setPendingDumpIds] = useState(null);
@@ -2366,12 +2397,15 @@ function App() {
     }, []);
     const [projectEditModal, setProjectEditModal] = useState(null); // project whose name/desc is being edited
     const [projectItemEdit, setProjectItemEdit] = useState(null); // { projId, secKey, item } being edited
+    const [listItemEdit, setListItemEdit] = useState(null); // { listId, item } being edited — reuses ProjectItemEditModal's generic {item, onSave, onClose} contract
     const [confirmState, setConfirmState] = useState(null); // in-app confirm dialog payload
     // Route every destructive confirmation through the in-app ConfirmModal.
     const askConfirm = (opts) => setConfirmState(opts);
     // Project area tagging (transient)
     const [newProjectArea, setNewProjectArea] = useState(null);
     const [projectAreaFilter, setProjectAreaFilter] = useState("all");
+    const [newListArea, setNewListArea] = useState(null);
+    const [listAreaFilter, setListAreaFilter] = useState("all");
     const [addingCalEvent, setAddingCalEvent] = useState(false);
     const [calViewYear, setCalViewYear] = useState(() => new Date().getFullYear());
     const [calViewMonth, setCalViewMonth] = useState(() => new Date().getMonth());
@@ -2383,10 +2417,10 @@ function App() {
     useEffect(() => {
         saveAppState({
             organized, todayDump, plan, rolling, dumpItems,
-            widgets, activePreset, modules, bottomBarModule, introDismissed, onboardingSeen, projects, calendarEvents, completedToday, doneLog, ideas, notes, workFolders,
+            widgets, activePreset, modules, bottomBarModule, introDismissed, onboardingSeen, projects, calendarEvents, completedToday, doneLog, ideas, notes, lists, workFolders,
         });
     }, [organized, todayDump, plan, rolling, dumpItems,
-        widgets, activePreset, modules, bottomBarModule, introDismissed, onboardingSeen, projects, calendarEvents, ideas, notes, workFolders]);
+        widgets, activePreset, modules, bottomBarModule, introDismissed, onboardingSeen, projects, calendarEvents, ideas, notes, lists, workFolders]);
     const allTasks = SECS.flatMap(s => plan[s.key] || []);
     const doneTasks = allTasks.filter(t => t.done);
     const notDoneTasks = allTasks.filter(t => !t.done);
@@ -2809,7 +2843,7 @@ function App() {
         if (turningOff && tab === key)
             setTab("today");
     }
-    // The optional modules (Notes/Ideas/Projects) share ONE mobile bottom-bar
+    // The optional modules (Notes/Ideas/Projects/Lists) share ONE mobile bottom-bar
     // slot, symmetrically — picking one clears any previous pick automatically
     // since bottomBarModule only ever holds a single key. Picking the module
     // already in that slot again clears it back to "None" (bar stays plain).
@@ -4048,6 +4082,53 @@ function App() {
         }));
         setProjectItemEdit(null);
     }
+    // ── Lists helpers ────────────────────────────────────────────────────────
+    function createList() {
+        const name = newListName.trim();
+        if (!name)
+            return;
+        const list = { id: uid(), name, area: newListArea, items: [], createdAt: Date.now() };
+        setLists(l => [...l, list]);
+        setNewListName("");
+        setNewListArea(null);
+        setAddingList(false);
+        setOpenListId(list.id);
+    }
+    function setListArea(listId, areaKey) {
+        setLists(l => l.map(x => x.id === listId ? { ...x, area: areaKey } : x));
+    }
+    // Renamed live as the user types (like Notes' title field) rather than
+    // through a modal — a list has no other field to bundle a Save/Cancel
+    // step with. onBlur (in the view) restores a fallback name if left blank;
+    // this just stores whatever's typed, including a transient empty string.
+    function renameList(listId, name) {
+        setLists(l => l.map(x => x.id === listId ? { ...x, name } : x));
+    }
+    function deleteList(id) {
+        setLists(l => l.filter(x => x.id !== id));
+        if (openListId === id)
+            setOpenListId(null);
+    }
+    function addListItem(listId) {
+        const text = (listDraftInput[listId] || "").trim();
+        if (!text)
+            return;
+        setLists(l => l.map(x => x.id !== listId ? x : { ...x, items: [...x.items, { id: uid(), text, done: false }] }));
+        setListDraftInput(d => ({ ...d, [listId]: "" }));
+    }
+    function toggleListItem(listId, itemId) {
+        setLists(l => l.map(x => x.id !== listId ? x : { ...x, items: x.items.map(it => it.id === itemId ? { ...it, done: !it.done } : it) }));
+    }
+    function deleteListItem(listId, itemId) {
+        setLists(l => l.map(x => x.id !== listId ? x : { ...x, items: x.items.filter(it => it.id !== itemId) }));
+    }
+    function saveListItemText(listId, itemId, text) {
+        const t = text.trim();
+        if (!t)
+            return;
+        setLists(l => l.map(x => x.id !== listId ? x : { ...x, items: x.items.map(it => it.id === itemId ? { ...it, text: t } : it) }));
+        setListItemEdit(null);
+    }
     const ProjectsView = () => {
         // ── NO HOOKS — all state lives in App ──────────────────────────────────
         const openProject = projects.find(p => p.id === openProjectId) || null;
@@ -4232,6 +4313,124 @@ function App() {
                         PROJECT_SECTIONS.map(sec => (React.createElement("div", { key: sec.key, style: { display: "flex", alignItems: "center", gap: 7, marginBottom: 5 } },
                             React.createElement("i", { className: `ti ${sec.icon}`, style: { fontSize: 12, color: T.ink3, width: 14, textAlign: "center" } }),
                             React.createElement("span", { style: { fontSize: 11, color: T.ink2 } }, sec.label)))))))));
+    };
+    // ── Lists view (checklist-style lists) ────────────────────────────────────
+    // Same list+detail navigation as Projects, minus sections/description/done —
+    // a list is just a name and a flat array of checkable items.
+    const ListsView = () => {
+        // ── NO HOOKS — all state lives in App ──────────────────────────────────
+        const openList = lists.find(l => l.id === openListId) || null;
+        function ListCard(list) {
+            const total = list.items.length;
+            const done = list.items.filter(it => it.done).length;
+            const pct = total > 0 ? Math.round(done / total * 100) : 0;
+            const isActive = list.id === openListId;
+            return (React.createElement("button", { key: list.id, onClick: () => setOpenListId(list.id), style: {
+                    width: "100%", textAlign: "left", display: "block", cursor: "pointer",
+                    background: T.panel, marginBottom: 8, padding: "12px 14px",
+                    border: isActive ? `1.5px solid ${T.red}` : T.cardBorder,
+                    borderRadius: 4,
+                    boxShadow: isActive ? `0 0 0 3px rgba(224,48,48,0.12), ${T.cardShadow}` : T.cardShadow,
+                    transition: "box-shadow .1s, border-color .1s"
+                } },
+                React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: 10 } },
+                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+                            React.createElement("span", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 16, textTransform: "uppercase", letterSpacing: "0.02em", color: isActive ? T.red : T.ink, lineHeight: 1.1, wordBreak: "break-word", overflowWrap: "break-word" } }, list.name || "Unnamed List"),
+                            list.area && React.createElement(AreaChip, { areaKey: list.area })),
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 8 } },
+                            React.createElement("div", { style: { flex: 1, maxWidth: 140, height: 3, background: T.lineSoft, borderRadius: 2, overflow: "hidden" } },
+                                React.createElement("div", { style: { height: "100%", width: `${pct}%`, background: isActive ? T.red : T.ink, borderRadius: 2 } })),
+                            React.createElement("span", { style: { fontSize: 9.5, fontWeight: 700, fontFamily: FONT_CONDENSED, color: T.ink3, letterSpacing: "0.06em" } }, total === 0 ? "EMPTY" : `${done}/${total}`))),
+                    React.createElement("i", { className: "ti ti-chevron-right", style: { fontSize: 13, color: isActive ? T.red : T.ink3, flexShrink: 0, marginTop: 3 } }))));
+        }
+        // ── LIST DETAIL VIEW ─────────────────────────────────────────────────────
+        if (openList) {
+            const total = openList.items.length;
+            const done = openList.items.filter(it => it.done).length;
+            const pct = total > 0 ? Math.round(done / total * 100) : 0;
+            const draftKey = openList.id;
+            const draft = listDraftInput[draftKey] || "";
+            return (React.createElement("div", { style: { padding: "1.6rem 1.8rem", maxWidth: 640, boxSizing: "border-box" } },
+                React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: 14, marginBottom: 20 } },
+                    React.createElement("button", { onClick: () => setOpenListId(null), style: { marginTop: 6, padding: "5px 10px", border: `1.5px solid ${T.line}`, borderRadius: 3, background: "transparent", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: FONT_CONDENSED, textTransform: "uppercase", letterSpacing: "0.07em", color: T.ink, display: "flex", alignItems: "center", gap: 5, flexShrink: 0 } },
+                        React.createElement("i", { className: "ti ti-arrow-left", style: { fontSize: 12 } }),
+                        " Back"),
+                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                        React.createElement("input", {
+                            key: openList.id, value: openList.name,
+                            onChange: e => renameList(openList.id, e.target.value),
+                            onBlur: () => { if (!openList.name.trim())
+                                    renameList(openList.id, "Unnamed List"); },
+                            placeholder: "List name",
+                            style: { width: "100%", fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 44, lineHeight: 0.9, color: T.ink, textTransform: "uppercase", letterSpacing: "0", background: "transparent", border: "none", outline: "none", padding: "4px 0", boxSizing: "border-box" }
+                        }),
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginTop: 10 } },
+                            React.createElement("div", { style: { flex: 1, maxWidth: 200, height: 4, background: T.lineSoft, borderRadius: 2, overflow: "hidden" } },
+                                React.createElement("div", { style: { height: "100%", width: `${pct}%`, background: pct === 100 && total > 0 ? T.ink : T.red, borderRadius: 2, transition: "width .3s" } })),
+                            React.createElement("span", { style: { fontSize: 10.5, fontWeight: 700, color: T.ink3, fontFamily: FONT_CONDENSED, letterSpacing: "0.06em" } }, total === 0 ? "EMPTY" : `${done}/${total} CHECKED`),
+                            pct === 100 && total > 0 && (React.createElement("span", { style: { fontSize: 10, fontWeight: 700, color: T.red, fontFamily: FONT_CONDENSED, letterSpacing: "0.08em" } }, "✓ ALL CHECKED"))),
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 12, flexWrap: "wrap" } },
+                            React.createElement("span", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3 } }, "AREA"),
+                            React.createElement(AreaPicker, { value: openList.area ?? null, onChange: (k) => setListArea(openList.id, k) })))),
+                React.createElement("div", { style: { border: T.cardBorder, borderRadius: 4, padding: "14px 16px", background: T.panel, marginBottom: 12, boxShadow: T.cardShadow } },
+                    openList.items.length === 0 && React.createElement("div", { style: { fontSize: 12.5, color: T.ink3, padding: "6px 0 10px" } }, "No items yet. Add the first one below."),
+                    openList.items.length > 0 && (React.createElement("div", { style: { marginBottom: 10 } }, openList.items.map((it, i) => (React.createElement("div", { key: it.id, className: "ev-row", style: { display: "flex", alignItems: "flex-start", gap: 8, padding: "7px 0", borderBottom: i < openList.items.length - 1 ? `1px dashed ${T.lineSoft}` : "none" } },
+                        React.createElement(Checkbox, { done: it.done, onToggle: () => toggleListItem(openList.id, it.id) }),
+                        React.createElement("span", { onClick: () => setListItemEdit({ listId: openList.id, item: it }), title: "Click to edit", style: { flex: 1, fontSize: 13, color: it.done ? T.ink3 : T.ink, textDecoration: it.done ? "line-through" : "none", lineHeight: 1.45, cursor: "text" } }, it.text),
+                        React.createElement("button", { onClick: () => setListItemEdit({ listId: openList.id, item: it }), title: "Edit", className: "ev-handle", style: { ...C.iBtn(isMobile), padding: isMobile ? "10px" : "0 2px" } },
+                            React.createElement("i", { className: "ti ti-pencil", style: { fontSize: 11 } })),
+                        React.createElement("button", { onClick: () => deleteListItem(openList.id, it.id), title: "Remove", className: "ev-handle", style: { ...C.iBtn(isMobile), padding: isMobile ? "10px" : "0 2px" } },
+                            React.createElement("i", { className: "ti ti-x", style: { fontSize: 11 } }))))))),
+                    React.createElement("div", { style: { display: "flex", gap: 6, marginTop: openList.items.length > 0 ? 2 : 10 } },
+                        React.createElement("input", { value: draft, onChange: e => setListDraftInput(d => ({ ...d, [draftKey]: e.target.value })), onKeyDown: e => { if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    addListItem(openList.id);
+                                } }, placeholder: "Add an item…", style: { flex: 1, fontSize: 12.5, padding: "6px 10px", background: T.panelAlt, border: `1.5px solid ${T.lineSoft}`, borderRadius: 3, color: T.ink, outline: "none", fontFamily: "inherit" } }),
+                        React.createElement("button", { onClick: () => addListItem(openList.id), disabled: !draft.trim(), style: { padding: "6px 12px", borderRadius: 3, cursor: draft.trim() ? "pointer" : "default", fontSize: 11, fontWeight: 700, fontFamily: FONT_CONDENSED, textTransform: "uppercase", letterSpacing: "0.05em", background: draft.trim() ? T.ink : T.panelAlt, color: draft.trim() ? "#fff" : T.ink3, border: "none" } }, "ADD"))),
+                React.createElement("div", { style: { marginTop: 10, paddingTop: 14, borderTop: `1px dashed ${T.lineSoft}`, display: "flex", alignItems: "center", gap: 14 } },
+                    React.createElement("button", { onClick: () => askConfirm({ title: "Delete list", message: `"${openList.name || "Unnamed List"}" and everything in it will be gone for good.`, confirmLabel: "Delete list", onConfirm: () => deleteList(openList.id) }), style: { ...C.iBtn(isMobile), fontSize: 11, color: T.ink3, display: "inline-flex", alignItems: "center", gap: 5 } },
+                        React.createElement("i", { className: "ti ti-trash", style: { fontSize: 12 } }),
+                        " Delete this list"))));
+        }
+        // ── LISTS OVERVIEW ────────────────────────────────────────────────────────
+        const listAreaAll = lists.filter(l => areaMatchesFilter(l.area, listAreaFilter));
+        return (React.createElement("div", { style: { padding: "1.6rem 1.8rem", maxWidth: 640, boxSizing: "border-box" } },
+            React.createElement("div", { style: { marginBottom: 20 } },
+                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3, marginBottom: 4 } }, new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })),
+                React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 38, lineHeight: 0.9, color: T.ink, textTransform: "uppercase", letterSpacing: "0" } },
+                    "LISTS, ",
+                    React.createElement("span", { style: { color: T.red } }, "CHECKED OFF.")),
+                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: T.ink3, marginTop: 6 } }, "GROCERIES, PACKING, WHATEVER NEEDS ONE.")),
+            // Area filter — Personal vs Work, plus each Work folder
+            React.createElement("div", { style: { display: "flex", gap: 5, marginBottom: 10, flexWrap: "wrap", alignItems: "center" } },
+                React.createElement("span", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3, marginRight: 3 } }, "AREA"),
+                areaFilters().map(f => React.createElement("button", { key: f.key, onClick: () => setListAreaFilter(f.key), style: isMobile ? C.pill(listAreaFilter === f.key, true) : { ...C.pill(listAreaFilter === f.key), fontSize: 10, padding: "4px 10px" } }, f.label))),
+            addingList && (React.createElement("div", { style: { border: `1.5px dashed rgba(0,0,0,0.18)`, borderRadius: 4, padding: "16px", background: T.panel, marginBottom: 12, boxShadow: T.cardShadow } },
+                React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.1em", color: T.ink3, marginBottom: 10 } }, "NEW LIST"),
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 12 } },
+                    React.createElement("input", { autoFocus: true, value: newListName, onChange: e => setNewListName(e.target.value), onKeyDown: e => { if (e.key === "Enter")
+                            createList(); if (e.key === "Escape") {
+                            setAddingList(false);
+                            setNewListName("");
+                        } }, placeholder: "List name (e.g. Groceries)", style: { width: "100%", fontSize: 16, fontWeight: 700, fontFamily: FONT_CONDENSED, padding: "6px 0 10px", background: "transparent", border: "none", borderBottom: `2px solid ${T.line}`, color: T.ink, outline: "none", textTransform: "uppercase", boxSizing: "border-box" } })),
+                React.createElement("div", { style: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: T.ink3, marginBottom: 6 } }, "AREA"),
+                React.createElement("div", { style: { marginBottom: 12 } },
+                    React.createElement(AreaPicker, { value: newListArea, onChange: setNewListArea })),
+                React.createElement("div", { style: { display: "flex", gap: 8 } },
+                    React.createElement("button", { onClick: createList, disabled: !newListName.trim(), style: { flex: 1, padding: "9px", borderRadius: 3, background: newListName.trim() ? T.ink : T.panelAlt, color: newListName.trim() ? "#fff" : T.ink3, border: "none", fontWeight: 700, fontFamily: FONT_CONDENSED, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.07em", cursor: newListName.trim() ? "pointer" : "default" } }, "CREATE LIST"),
+                    React.createElement("button", { onClick: () => { setAddingList(false); setNewListName(""); }, style: { padding: "9px 14px", borderRadius: 3, cursor: "pointer", background: "transparent", border: `1.5px solid ${T.lineSoft}`, color: T.ink3, fontSize: 12, fontWeight: 600 } }, "Cancel")))),
+            lists.length === 0 && !addingList && (React.createElement("div", { style: { border: `2px dashed ${T.lineSoft}`, borderRadius: 3, padding: "3rem 2rem", textAlign: "center" } },
+                React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 900, fontSize: 22, color: T.ink3, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 } }, "NO LISTS YET."),
+                React.createElement("div", { style: { fontSize: 12.5, color: T.ink3, lineHeight: 1.6, maxWidth: 280, margin: "0 auto 18px" } }, "Groceries, packing, whatever needs checking off — make one place for each."),
+                React.createElement("button", { onClick: () => setAddingList(true), style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 20px", borderRadius: 3, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: FONT_CONDENSED, textTransform: "uppercase", letterSpacing: "0.07em", background: T.ink, color: "#fff", border: "none" } },
+                    React.createElement("i", { className: "ti ti-plus", style: { fontSize: 12 } }),
+                    " ADD YOUR FIRST LIST"))),
+            lists.length > 0 && !addingList && (React.createElement("button", { onClick: () => setAddingList(true), style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, width: "100%", padding: "12px 20px", marginBottom: 12, borderRadius: 3, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: FONT_CONDENSED, textTransform: "uppercase", letterSpacing: "0.07em", background: T.ink, color: "#fff", border: "none" } },
+                React.createElement("i", { className: "ti ti-plus", style: { fontSize: 12 } }),
+                " ADD LIST")),
+            listAreaAll.length === 0 && lists.length > 0 && listAreaFilter !== "all" && (React.createElement("div", { style: { border: `1.5px dashed ${T.lineSoft}`, borderRadius: 3, padding: "1.6rem", textAlign: "center", fontSize: 12, color: T.ink3 } }, "No lists in this area yet.")),
+            listAreaAll.map(list => ListCard(list))));
     };
     // ── Ideas / Notes view ───────────────────────────────────────────────────
     const IdeasView = () => {
@@ -4690,6 +4889,7 @@ function App() {
         { key: "notes", icon: "ti-notes", label: "Notes", badge: notes.filter(n => !n.archived).length || undefined },
         { key: "ideas", icon: "ti-bulb", label: "Ideas", badge: ideas.filter(i => !i.archived).length || undefined },
         { key: "projects", icon: "ti-folder", label: "Projects" },
+        { key: "lists", icon: "ti-list-check", label: "Lists", badge: lists.length || undefined },
         { key: "settings", icon: "ti-settings", label: "Settings" },
     ].filter(n => CORE_NAV_KEYS.includes(n.key) || modules[n.key]);
     // Mobile bottom bar + "More" sheet both just pull from NAV by key, via
@@ -4836,12 +5036,15 @@ function App() {
                 tab === "done" && DoneView(),
                 tab === "reset" && ResetView(),
                 tab === "projects" && ProjectsView(),
+                tab === "lists" && ListsView(),
                 tab === "settings" && React.createElement(SettingsView, { modules, onToggleModule: toggleModule, bottomBarModule, onPickBottomBarModule: pickBottomBarModule, onReplayOnboarding: replayOnboarding })),
             modal && React.createElement(TaskModal, { task: modal, onSave: saveTask, onDelete: deleteTask, onClose: () => setModal(null) }),
             calModal && React.createElement(CalendarEventModal, { event: calModal, onSave: saveCalendarEvent, onDelete: deleteCalendarEvent, onClose: () => setCalModal(null) }),
             ideaEditModal && React.createElement(IdeaEditModal, { idea: ideaEditModal, onSave: saveIdeaEdit, onDelete: deleteIdeaFromModal, onClose: () => setIdeaEditModal(null) }),
             projectEditModal && React.createElement(ProjectEditModal, { project: projectEditModal, onSave: saveProjectMeta, onClose: () => setProjectEditModal(null) }),
             projectItemEdit && React.createElement(ProjectItemEditModal, { item: projectItemEdit.item, onSave: (text) => saveProjectItemText(projectItemEdit.projId, projectItemEdit.secKey, projectItemEdit.item.id, text), onClose: () => setProjectItemEdit(null) }),
+            // Reuses ProjectItemEditModal for list items too — same generic {item, onSave, onClose} contract, nothing Project-specific inside it.
+            listItemEdit && React.createElement(ProjectItemEditModal, { item: listItemEdit.item, onSave: (text) => saveListItemText(listItemEdit.listId, listItemEdit.item.id, text), onClose: () => setListItemEdit(null) }),
             confirmState && React.createElement(ConfirmModal, { title: confirmState.title, message: confirmState.message, confirmLabel: confirmState.confirmLabel, onConfirm: confirmState.onConfirm, onClose: () => setConfirmState(null) }),
             reviewItems && ReviewPanel(),
             onboardingOpen && React.createElement(OnboardingModal, { onClose: closeOnboarding })),
