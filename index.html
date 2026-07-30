@@ -2123,6 +2123,7 @@ function App() {
     // runs long, same as writing in Apple Notes.
     const noteBodyRef = useRef(null);
     const pendingNoteFocusRef = useRef(false); // set true right after "New Note" so the body gets focus once it mounts
+    const pendingBulletSelectionRef = useRef(null); // [start, end] to restore after a bullet-list edit re-renders the (controlled) textarea
     const sentToTodayLockRef = useRef({}); // synchronous re-entrancy lock so a double-tap can't send the same idea twice before React re-renders
     const noteSaveTimerRef = useRef(null); // debounce handle for live-saving the open note draft
     const noteDraftRef = useRef(null); // always-current mirror of noteEditDraft, readable from timers/unload handlers
@@ -2136,6 +2137,13 @@ function App() {
         if (pendingNoteFocusRef.current) {
             pendingNoteFocusRef.current = false;
             try { el.focus(); } catch (e) { /* no-op if focus can't be set */ }
+        }
+        if (pendingBulletSelectionRef.current) {
+            const [s, e2] = pendingBulletSelectionRef.current;
+            pendingBulletSelectionRef.current = null;
+            // Chrome won't retain a setSelectionRange call on a blurred textarea
+            // (the toolbar button click just stole focus), so reclaim focus first.
+            try { el.focus({ preventScroll: true }); el.setSelectionRange(s, e2); } catch (e) { /* no-op if selection can't be set */ }
         }
     }, [noteEditDraft?.body, noteEditDraft?.id]);
     // Keep the focused Notes field above the iOS on-screen keyboard. iOS Safari
@@ -2472,6 +2480,67 @@ function App() {
         commitNoteDraft();
         setOpenNoteId(null);
         setNoteEditDraft(null);
+    }
+    const NOTE_BULLET = "• ";
+    // Toggles a bullet marker on every line touched by the current selection
+    // (or just the cursor's line, if nothing is selected). Mirrors the plain-
+    // textarea editor's style — no rich text, just a text transform — and
+    // toggles off if every touched line is already bulleted.
+    function toggleBulletList() {
+        const el = noteBodyRef.current;
+        if (!el || !noteEditDraft)
+            return;
+        const body = noteEditDraft.body || "";
+        const start = el.selectionStart, end = el.selectionEnd;
+        const lineStart = body.lastIndexOf("\n", start - 1) + 1;
+        let lineEnd = body.indexOf("\n", end);
+        if (lineEnd === -1)
+            lineEnd = body.length;
+        const lines = body.slice(lineStart, lineEnd).split("\n");
+        const allBulleted = lines.every(l => l.startsWith(NOTE_BULLET));
+        let firstLineDelta = 0, totalDelta = 0;
+        const newLines = lines.map((l, i) => {
+            const nl = allBulleted ? l.slice(NOTE_BULLET.length) : (l.startsWith(NOTE_BULLET) ? l : NOTE_BULLET + l);
+            const delta = nl.length - l.length;
+            if (i === 0)
+                firstLineDelta = delta;
+            totalDelta += delta;
+            return nl;
+        });
+        const newBody = body.slice(0, lineStart) + newLines.join("\n") + body.slice(lineEnd);
+        pendingBulletSelectionRef.current = [Math.max(lineStart, start + firstLineDelta), end + totalDelta];
+        setNoteEditDraft(d => ({ ...d, body: newBody }));
+    }
+    // Enter on a bulleted line continues the list onto the next line; Enter on
+    // an EMPTY bulleted line ends it instead (strips the marker rather than
+    // starting yet another blank bullet) — same as Notes-style editors.
+    function handleNoteBodyKeyDown(e) {
+        if (e.key !== "Enter" || e.shiftKey)
+            return;
+        const el = e.currentTarget;
+        const body = noteEditDraft.body || "";
+        const pos = el.selectionStart;
+        if (pos !== el.selectionEnd)
+            return; // let a real selection just get replaced normally
+        const lineStart = body.lastIndexOf("\n", pos - 1) + 1;
+        const line = body.slice(lineStart, pos);
+        if (!line.startsWith(NOTE_BULLET))
+            return;
+        e.preventDefault();
+        let lineEnd = body.indexOf("\n", pos);
+        if (lineEnd === -1)
+            lineEnd = body.length;
+        const fullLine = body.slice(lineStart, lineEnd);
+        if (fullLine.trim() === NOTE_BULLET.trim()) {
+            const newBody = body.slice(0, lineStart) + body.slice(lineStart + NOTE_BULLET.length);
+            pendingBulletSelectionRef.current = [lineStart, lineStart];
+            setNoteEditDraft(d => ({ ...d, body: newBody }));
+            return;
+        }
+        const newBody = body.slice(0, pos) + "\n" + NOTE_BULLET + body.slice(pos);
+        const newPos = pos + 1 + NOTE_BULLET.length;
+        pendingBulletSelectionRef.current = [newPos, newPos];
+        setNoteEditDraft(d => ({ ...d, body: newBody }));
     }
     function deleteNoteFromModal(id) {
         askConfirm({ title: "Delete note", message: "This note and everything in it will be gone for good.", confirmLabel: "Delete note", onConfirm: () => {
@@ -4209,12 +4278,23 @@ function App() {
                                 }),
                                 React.createElement("button", { onClick: closeNote, title: "Back to notes", style: { ...C.iBtn(isMobile), fontSize: 18, flexShrink: 0, marginTop: 4 } },
                                     React.createElement("i", { className: "ti ti-arrow-left" }))),
+                            // Formatting toolbar — one button for now (bulleted list). Toggles
+                            // the "• " marker on the cursor's line, or every line touched by
+                            // the current selection; Enter continues the list automatically.
+                            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 10 } },
+                                React.createElement("button", {
+                                    type: "button", onClick: toggleBulletList, title: "Bulleted list",
+                                    style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: isMobile ? 12.5 : 10.5, padding: isMobile ? "7px 12px" : "4px 9px", borderRadius: 2, cursor: "pointer", border: `1.5px solid ${T.lineSoft}`, background: "transparent", color: T.ink2, fontWeight: 600, ...(isMobile ? { minHeight: 36 } : {}) }
+                                },
+                                    React.createElement("i", { className: "ti ti-list", style: { fontSize: 13 }, "aria-hidden": true }),
+                                    "Bullets")),
                             React.createElement("div", { style: { display: "flex", gap: 8, flex: 1 } },
                                 React.createElement("textarea", {
                                     ref: noteBodyRef,
                                     value: noteEditDraft.body,
                                     onChange: e => setNoteEditDraft(d => ({ ...d, body: e.target.value })),
                                     onFocus: onNoteFieldFocus,
+                                    onKeyDown: handleNoteBodyKeyDown,
                                     placeholder: "Write anything…",
                                     style: {
                                         flex: 1, minWidth: 0, fontSize: 16, lineHeight: 1.7, fontFamily: "inherit",
