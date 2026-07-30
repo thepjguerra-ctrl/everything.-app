@@ -439,6 +439,27 @@ function safeArea(v) {
     return AREA_MAP[v] ? v : null;
 }
 // ── Notes (first-class quick notes, separate from project notes) ─────────────
+// A note may carry ONE attachment (image / audio / PDF), stored inline as a
+// base64 data URL — this app has no backend, so localStorage is the only place
+// it can live. That trades a hard per-file size cap (see MAX_ATTACHMENT_BYTES)
+// and finite total-quota headroom for "it just works, no server required."
+// Malformed/legacy records (missing fields, corrupted JSON edits, a future
+// format we don't recognize) normalize to `null` rather than crashing render.
+function normalizeAttachment(raw) {
+    if (!raw || typeof raw !== "object")
+        return null;
+    if (typeof raw.dataUrl !== "string" || !raw.dataUrl.startsWith("data:"))
+        return null;
+    if (typeof raw.name !== "string" || typeof raw.type !== "string")
+        return null;
+    return {
+        name: raw.name,
+        type: raw.type,
+        size: typeof raw.size === "number" ? raw.size : 0,
+        dataUrl: raw.dataUrl,
+        addedAt: typeof raw.addedAt === "number" ? raw.addedAt : Date.now(),
+    };
+}
 function normalizeNote(raw) {
     if (!raw || typeof raw !== "object")
         return null;
@@ -449,9 +470,43 @@ function normalizeNote(raw) {
         area: safeArea(raw.area),
         pinned: typeof raw.pinned === "boolean" ? raw.pinned : false,
         archived: typeof raw.archived === "boolean" ? raw.archived : false,
+        attachment: normalizeAttachment(raw.attachment),
         createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
         updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now(),
     };
+}
+// Pre-check cap on the RAW file (before base64, which inflates size by ~33%).
+// This is a courtesy that avoids ever trying to encode something absurd — the
+// real safety net is the eager probe-write in attachFileToNote, which catches
+// "doesn't actually fit in what's left of the quota" regardless of this cap.
+const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024; // 3MB
+const ATTACHMENT_ACCEPT = "image/*,audio/*,application/pdf";
+// Extension fallbacks matter because some browser/OS combos hand back an EMPTY
+// file.type for otherwise-ordinary files (HEIC photos, .m4a voice memos are
+// the common offenders) — without these, a real photo or voice note could get
+// silently misclassified as a generic "file" instead of getting its proper
+// thumbnail/player.
+const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|heic|heif|bmp|svg)$/i;
+const AUDIO_EXT_RE = /\.(mp3|wav|m4a|aac|ogg|oga|webm|flac|opus|caf)$/i;
+function attachmentKind(att) {
+    if (!att)
+        return null;
+    const t = (att.type || "").toLowerCase();
+    const name = att.name || "";
+    if (t.startsWith("image/") || IMAGE_EXT_RE.test(name))
+        return "image";
+    if (t.startsWith("audio/") || AUDIO_EXT_RE.test(name))
+        return "audio";
+    if (t === "application/pdf" || /\.pdf$/i.test(name))
+        return "pdf";
+    return "file";
+}
+function formatFileSize(bytes) {
+    if (!bytes)
+        return "0 KB";
+    if (bytes < 1024 * 1024)
+        return Math.max(1, Math.round(bytes / 1024)) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 // ── Saved-state guards ───────────────────────────────────────────────────────
 // These prevent old or corrupted localStorage values from crashing the app on load.
@@ -602,6 +657,45 @@ function saveAppState(state) {
     }
     catch (e) {
         console.warn("[everything] Could not save state:", e);
+    }
+}
+// Applies `updateFn` to ONE note's record in storage and writes the result
+// back RIGHT NOW, synchronously — reading the current localStorage value as
+// the source of truth (not React state, which could be a render or two behind
+// a fast-firing FileReader callback) so this can never clobber a more recent
+// edit that hasn't round-tripped through the debounced autosave yet.
+// Used the moment an attachment is added so a quota failure is caught and
+// shown to the user at that exact moment — instead of silently failing later
+// inside the debounced whole-app autosave, where it would look like nothing
+// went wrong while the attachment quietly never saved.
+// `fallbackNote` is used if `noteId` isn't found in storage yet (e.g. a
+// brand-new note whose first save is still in flight); if neither has it,
+// this fails closed rather than silently doing nothing.
+// Returns true/false; never throws.
+function tryPersistNoteUpdate(noteId, updateFn, fallbackNote) {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const data = raw ? JSON.parse(raw) : {};
+        if (!Array.isArray(data.notes))
+            data.notes = [];
+        let found = false;
+        data.notes = data.notes.map(n => {
+            if (n.id !== noteId)
+                return n;
+            found = true;
+            return updateFn(n);
+        });
+        if (!found) {
+            if (!fallbackNote)
+                return false;
+            data.notes = [updateFn(fallbackNote), ...data.notes];
+        }
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...data, appVersion: APP_VERSION }));
+        return true;
+    }
+    catch (e) {
+        console.warn("[everything] Could not persist note update (attachment likely too large for remaining storage):", e);
+        return false;
     }
 }
 // Shared download routine — builds the same JSON payload the manual export in
@@ -1731,6 +1825,9 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
             React.createElement("div", { style: { fontSize: 10.5, color: T.ink3, marginTop: 10, lineHeight: 1.5, display: "flex", alignItems: "flex-start", gap: 5 } },
                 React.createElement("i", { className: "ti ti-shield-check", style: { fontSize: 12, marginTop: 1, flexShrink: 0 }, "aria-hidden": true }),
                 "Imports are checked before anything is saved, and your current data is snapshotted first — so a bad file can always be undone."),
+            React.createElement("div", { style: { fontSize: 10.5, color: T.ink3, marginTop: 6, lineHeight: 1.5, display: "flex", alignItems: "flex-start", gap: 5 } },
+                React.createElement("i", { className: "ti ti-paperclip", style: { fontSize: 12, marginTop: 1, flexShrink: 0 }, "aria-hidden": true }),
+                `Note attachments (images, audio, PDFs) are stored here too, and count against the same limited space — this browser typically allows a few MB total, so a handful of large files can fill it up. Each attachment is capped at ${formatFileSize(MAX_ATTACHMENT_BYTES)}, and you'll get a clear message if one won't fit.`),
             React.createElement("input", { ref: fileInputRef, type: "file", accept: ".json,application/json", onChange: handleImport, style: { display: "none" } }),
             importStatus && (React.createElement("div", { style: { fontSize: 12, padding: "8px 11px", borderRadius: 8, marginTop: 12,
                     background: importStatus === "success" ? "#F0FAF4" : "#FFF0F0",
@@ -2169,7 +2266,10 @@ function App() {
     // Note" creates the note record directly and opens it in the editor pane.
     const [noteFilter, setNoteFilter] = useState("all");
     const [openNoteId, setOpenNoteId] = useState(null); // note open in the right-hand editor pane
-    const [noteEditDraft, setNoteEditDraft] = useState(null); // { id, title, body, area } — local edits before they're committed
+    const [noteEditDraft, setNoteEditDraft] = useState(null); // { id, title, body, area, attachment } — local edits before they're committed
+    const [noteAttaching, setNoteAttaching] = useState(false); // true while a picked file is being read/encoded
+    const [noteAttachError, setNoteAttachError] = useState(null); // user-facing message when a file is rejected or won't fit in storage
+    const noteAttachInputRef = useRef(null);
     // Notes editor pane — no max height, no inner scrollbar. The textarea
     // grows to exactly fit whatever's written so nothing is ever cut off or
     // hidden behind a small scroll box; the page itself scrolls once the note
@@ -2248,7 +2348,7 @@ function App() {
             clearTimeout(noteSaveTimerRef.current);
         noteSaveTimerRef.current = setTimeout(() => { liveSaveNoteDraft(noteDraftRef.current); }, 400);
         return () => { if (noteSaveTimerRef.current) { clearTimeout(noteSaveTimerRef.current); noteSaveTimerRef.current = null; } };
-    }, [noteEditDraft?.id, noteEditDraft?.title, noteEditDraft?.body, noteEditDraft?.area]);
+    }, [noteEditDraft?.id, noteEditDraft?.title, noteEditDraft?.body, noteEditDraft?.area, noteEditDraft?.attachment]);
     // Safety net for the only window live-save can't cover on its own: the page
     // being hidden or torn down mid-debounce (backgrounded tab, closed tab, iOS
     // reclaiming Safari). React state updates can't flush through the normal
@@ -2473,7 +2573,7 @@ function App() {
             return;
         const t = (draft.title || "").trim();
         setNotes(prev => prev.map(n => n.id === draft.id
-            ? { ...n, title: t || "Untitled", body: draft.body, area: draft.area, updatedAt: Date.now() }
+            ? { ...n, title: t || "Untitled", body: draft.body, area: draft.area, attachment: draft.attachment ?? null, updatedAt: Date.now() }
             : n));
     }
     // Synchronous localStorage patch for the open note draft. React's normal
@@ -2492,7 +2592,7 @@ function App() {
                 return;
             const t = (draft.title || "").trim();
             data.notes = data.notes.map(n => n.id === draft.id
-                ? { ...n, title: t || "Untitled", body: draft.body, area: draft.area, updatedAt: Date.now() }
+                ? { ...n, title: t || "Untitled", body: draft.body, area: draft.area, attachment: draft.attachment ?? null, updatedAt: Date.now() }
                 : n);
             localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         }
@@ -2503,36 +2603,86 @@ function App() {
             return;
         const t = noteEditDraft.title.trim();
         const b = noteEditDraft.body.trim();
-        if (!t && !b) {
+        if (!t && !b && !noteEditDraft.attachment) {
             // Never left with dead weight — a note nobody wrote anything into
             // (a fresh "New Note" that was closed untouched, or an existing
             // note that got cleared out completely) is dropped rather than
-            // saved as an empty "Untitled" card, same as real Apple Notes.
+            // saved as an empty "Untitled" card, same as real Apple Notes. An
+            // attachment with no text still counts as real content, though —
+            // "here's a photo of the thing" is a complete note on its own.
             setNotes(prev => prev.filter(n => n.id !== noteEditDraft.id));
             return;
         }
         setNotes(prev => prev.map(n => n.id === noteEditDraft.id
-            ? { ...n, title: t || "Untitled", body: noteEditDraft.body, area: noteEditDraft.area, updatedAt: Date.now() }
+            ? { ...n, title: t || "Untitled", body: noteEditDraft.body, area: noteEditDraft.area, attachment: noteEditDraft.attachment ?? null, updatedAt: Date.now() }
             : n));
     }
     function openNote(note) {
         commitNoteDraft();
         setOpenNoteId(note.id);
-        setNoteEditDraft({ id: note.id, title: note.title, body: note.body, area: note.area ?? null });
+        setNoteEditDraft({ id: note.id, title: note.title, body: note.body, area: note.area ?? null, attachment: note.attachment ?? null });
+        setNoteAttachError(null);
     }
     function createNote() {
         commitNoteDraft();
         const id = uid();
-        const fresh = { id, title: "", body: "", area: null, pinned: false, archived: false, createdAt: Date.now(), updatedAt: Date.now() };
+        const fresh = { id, title: "", body: "", area: null, pinned: false, archived: false, attachment: null, createdAt: Date.now(), updatedAt: Date.now() };
         setNotes(prev => [fresh, ...prev]);
         setOpenNoteId(id);
-        setNoteEditDraft({ id, title: "", body: "", area: null });
+        setNoteEditDraft({ id, title: "", body: "", area: null, attachment: null });
+        setNoteAttachError(null);
         pendingNoteFocusRef.current = true;
     }
     function closeNote() {
         commitNoteDraft();
         setOpenNoteId(null);
         setNoteEditDraft(null);
+        setNoteAttachError(null);
+    }
+    // Reads the picked file, encodes it as a base64 data URL, and — critically —
+    // probes a REAL localStorage write immediately with tryPersistNotes rather
+    // than waiting for the debounced whole-app autosave. That means a quota
+    // failure surfaces right here, tied to the action that caused it, instead of
+    // failing silently later where the user would have no idea what went wrong
+    // or that the attachment never actually saved.
+    function attachFileToNote(file) {
+        if (!file || !noteEditDraft)
+            return;
+        setNoteAttachError(null);
+        const isAllowed = attachmentKind({ type: file.type, name: file.name }) !== "file";
+        if (!isAllowed) {
+            setNoteAttachError("That file type isn't supported — attach an image, audio file, or PDF.");
+            return;
+        }
+        if (file.size > MAX_ATTACHMENT_BYTES) {
+            setNoteAttachError(`That file is too big (${formatFileSize(file.size)}). Attachments are capped at ${formatFileSize(MAX_ATTACHMENT_BYTES)} so they reliably fit in this browser's local storage.`);
+            return;
+        }
+        setNoteAttaching(true);
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const attachment = { name: file.name, type: file.type || "application/octet-stream", size: file.size, dataUrl: e.target.result, addedAt: Date.now() };
+            const draft = noteDraftRef.current;
+            setNoteAttaching(false);
+            if (!draft)
+                return; // note was closed while the file was being read
+            const fallbackNote = notes.find(n => n.id === draft.id); // covers a brand-new note whose first save hasn't landed in storage yet
+            const applyAttachment = n => ({ ...n, title: (draft.title || "").trim() || "Untitled", body: draft.body, area: draft.area, attachment, updatedAt: Date.now() });
+            if (!tryPersistNoteUpdate(draft.id, applyAttachment, fallbackNote)) {
+                setNoteAttachError("Couldn't save that attachment — this browser's local storage is full. Try a smaller file, remove another note's attachment, or export a backup and clear old data in Settings.");
+                return;
+            }
+            setNoteEditDraft(d => (d && d.id === draft.id ? { ...d, attachment } : d));
+        };
+        reader.onerror = () => {
+            setNoteAttaching(false);
+            setNoteAttachError("Couldn't read that file.");
+        };
+        reader.readAsDataURL(file);
+    }
+    function removeNoteAttachment() {
+        setNoteAttachError(null);
+        setNoteEditDraft(d => (d ? { ...d, attachment: null } : d));
     }
     const NOTE_BULLET = "• ";
     // Toggles a bullet marker on every line touched by the current selection
@@ -4257,6 +4407,43 @@ function App() {
             const d = Math.floor((Date.now() - (n.updatedAt || n.createdAt)) / 86400000);
             return d === 0 ? "today" : d === 1 ? "yesterday" : `${d}d ago`;
         }
+        // Full attachment preview shown in the open editor pane: an actual
+        // thumbnail for images, a playable <audio> element for audio, and a
+        // filename/icon (opens in a new tab) for PDFs — matches the exact
+        // per-type indication the attach feature asked for, not just a generic
+        // "1 file attached" chip.
+        function renderNoteAttachment(att) {
+            const kind = attachmentKind(att);
+            const removeBtn = React.createElement("button", {
+                type: "button", onClick: removeNoteAttachment, title: "Remove attachment",
+                style: { ...C.iBtn(isMobile), fontSize: 14, color: T.ink3, flexShrink: 0, marginLeft: "auto" }
+            }, React.createElement("i", { className: "ti ti-x" }));
+            const meta = React.createElement("div", { style: { fontSize: 10.5, color: T.ink3, marginTop: 2 } }, att.name, " · ", formatFileSize(att.size));
+            if (kind === "image") {
+                return React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, border: T.cardBorder, borderRadius: 4, padding: 8, marginBottom: 14, background: T.panelAlt } },
+                    React.createElement("img", { src: att.dataUrl, alt: att.name, style: { width: 52, height: 52, objectFit: "cover", borderRadius: 3, flexShrink: 0, border: T.cardBorder } }),
+                    React.createElement("div", { style: { minWidth: 0, flex: 1 } },
+                        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: T.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, att.name),
+                        meta),
+                    removeBtn);
+            }
+            if (kind === "audio") {
+                return React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, border: T.cardBorder, borderRadius: 4, padding: 8, marginBottom: 14, background: T.panelAlt } },
+                    React.createElement("i", { className: "ti ti-microphone", style: { fontSize: 20, color: T.ink2, flexShrink: 0 }, "aria-hidden": true }),
+                    React.createElement("div", { style: { minWidth: 0, flex: 1 } },
+                        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: T.ink, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, att.name),
+                        React.createElement("audio", { controls: true, src: att.dataUrl, style: { width: "100%", height: 32 } })),
+                    removeBtn);
+            }
+            // PDF (or any other allowed-but-unrecognized type) — filename + icon,
+            // opens the data URL in a new tab.
+            return React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, border: T.cardBorder, borderRadius: 4, padding: 8, marginBottom: 14, background: T.panelAlt } },
+                React.createElement("i", { className: `ti ${kind === "pdf" ? "ti-file-type-pdf" : "ti-file"}`, style: { fontSize: 22, color: T.ink2, flexShrink: 0 }, "aria-hidden": true }),
+                React.createElement("a", { href: att.dataUrl, target: "_blank", rel: "noopener noreferrer", style: { minWidth: 0, flex: 1, textDecoration: "none" } },
+                    React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: T.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, att.name),
+                    meta),
+                removeBtn);
+        }
         function NoteCard(note, isArchived = false) {
             const isOpen = note.id === openNoteId;
             return React.createElement("div", {
@@ -4280,6 +4467,14 @@ function App() {
             React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: T.ink, lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, note.title),
             // Body preview
             note.body && React.createElement("div", { style: { fontSize: 11, color: T.ink2, lineHeight: 1.45, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, note.body),
+            // Attachment indicator — a tiny thumbnail for images, a small icon
+            // otherwise, so a card with an attachment is recognizable at a glance
+            // without opening it.
+            note.attachment && React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: T.ink3, overflow: "hidden" } },
+                attachmentKind(note.attachment) === "image"
+                    ? React.createElement("img", { src: note.attachment.dataUrl, alt: "", style: { width: 16, height: 16, objectFit: "cover", borderRadius: 2, flexShrink: 0 } })
+                    : React.createElement("i", { className: `ti ${attachmentKind(note.attachment) === "audio" ? "ti-microphone" : attachmentKind(note.attachment) === "pdf" ? "ti-file-type-pdf" : "ti-paperclip"}`, style: { fontSize: 11, flexShrink: 0 }, "aria-hidden": true }),
+                React.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, note.attachment.name)),
             // Actions
             React.createElement("div", { style: { display: "flex", gap: 4, marginTop: 2, flexWrap: "wrap" } },
                 !isArchived && React.createElement("button", {
@@ -4356,16 +4551,33 @@ function App() {
                                 }),
                                 React.createElement("button", { onClick: closeNote, title: "Back to notes", style: { ...C.iBtn(isMobile), fontSize: 18, flexShrink: 0, marginTop: 4 } },
                                     React.createElement("i", { className: "ti ti-arrow-left" }))),
-                            // Formatting toolbar — one button for now (bulleted list). Toggles
-                            // the "• " marker on the cursor's line, or every line touched by
-                            // the current selection; Enter continues the list automatically.
-                            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 10 } },
+                            // Formatting toolbar. Bullets toggles the "• " marker (Enter continues
+                            // the list automatically); Attach picks an image/audio/PDF file, reads
+                            // it as base64, and probes an immediate storage write (see
+                            // attachFileToNote) so a quota problem shows up right here.
+                            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 10, flexWrap: "wrap" } },
                                 React.createElement("button", {
                                     type: "button", onClick: toggleBulletList, title: "Bulleted list",
                                     style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: isMobile ? 12.5 : 10.5, padding: isMobile ? "7px 12px" : "4px 9px", borderRadius: 2, cursor: "pointer", border: `1.5px solid ${T.lineSoft}`, background: "transparent", color: T.ink2, fontWeight: 600, ...(isMobile ? { minHeight: 36 } : {}) }
                                 },
                                     React.createElement("i", { className: "ti ti-list", style: { fontSize: 13 }, "aria-hidden": true }),
-                                    "Bullets")),
+                                    "Bullets"),
+                                React.createElement("button", {
+                                    type: "button", onClick: () => noteAttachInputRef.current && noteAttachInputRef.current.click(),
+                                    disabled: noteAttaching || !!noteEditDraft.attachment,
+                                    title: noteEditDraft.attachment ? "Remove the current attachment first" : "Attach an image, audio file, or PDF",
+                                    style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: isMobile ? 12.5 : 10.5, padding: isMobile ? "7px 12px" : "4px 9px", borderRadius: 2, cursor: (noteAttaching || noteEditDraft.attachment) ? "default" : "pointer", border: `1.5px solid ${T.lineSoft}`, background: "transparent", color: (noteAttaching || noteEditDraft.attachment) ? T.ink3 : T.ink2, fontWeight: 600, opacity: (noteAttaching || noteEditDraft.attachment) ? 0.5 : 1, ...(isMobile ? { minHeight: 36 } : {}) }
+                                },
+                                    React.createElement("i", { className: "ti ti-paperclip", style: { fontSize: 13 }, "aria-hidden": true }),
+                                    noteAttaching ? "Attaching…" : "Attach"),
+                                React.createElement("input", {
+                                    ref: noteAttachInputRef, type: "file", accept: ATTACHMENT_ACCEPT, style: { display: "none" },
+                                    onChange: e => { const f = e.target.files[0]; if (f) attachFileToNote(f); e.target.value = ""; }
+                                })),
+                            noteAttachError && React.createElement("div", { style: { fontSize: 11.5, color: "#c0392b", background: "#FFF0F0", border: "1px solid #f5c6c6", borderRadius: 4, padding: "7px 10px", marginBottom: 10, display: "flex", alignItems: "flex-start", gap: 6, lineHeight: 1.4 } },
+                                React.createElement("i", { className: "ti ti-alert-circle", style: { fontSize: 13, marginTop: 1, flexShrink: 0 }, "aria-hidden": true }),
+                                noteAttachError),
+                            noteEditDraft.attachment && renderNoteAttachment(noteEditDraft.attachment),
                             React.createElement("div", { style: { display: "flex", gap: 8, flex: 1 } },
                                 React.createElement("textarea", {
                                     ref: noteBodyRef,
