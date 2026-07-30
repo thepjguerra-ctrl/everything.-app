@@ -8,7 +8,8 @@
   <!-- ── Home-screen install ─────────────────────────────────────────────
        Manifest + icons make "Add to Home Screen" launch chromeless
        (display: standalone) with a real app icon instead of a bookmark.
-       No service worker yet — that's a deliberate later pass, not this one. -->
+       sw.js caches the app shell and the CDN files below, so after one
+       online visit this opens and works with no connection at all. -->
   <link rel="manifest" href="manifest.json" />
   <meta name="theme-color" content="#141414" />
 
@@ -300,6 +301,32 @@
         window.__everythingShowError('Couldn\'t load the app from the web.', 'EVERYTHING. needs an internet connection the first time you open it, to fetch React, fonts, and icons. Check your connection and reload.\n\nIf you are online, an ad-blocker or VPN may be blocking the CDNs. Details:\n' + errors.join('\n'));
       }
       window.__bootEverything = boot;
+
+      // ── Offline support ───────────────────────────────────────────────────
+      // Registers sw.js, which caches index.html and the CDN files above so a
+      // second visit works with no connection. Deliberately deferred to `load`
+      // so it never competes with the React fetch that boot() is waiting on.
+      //
+      // updateViaCache:'none' makes the browser revalidate sw.js against the
+      // server instead of serving it from its own HTTP cache — without it, a
+      // worker could pin itself in place for as long as the HTTP cache lives.
+      //
+      // Guarded on protocol because this app is meant to be downloaded and
+      // forked: opened straight off disk over file://, service workers don't
+      // exist, and registering would throw. The .catch() is load-bearing too —
+      // an unhandled rejection here would trip the global handler above and
+      // show the user a recovery screen for a purely optional feature.
+      var swOk = 'serviceWorker' in navigator &&
+        (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+      if (swOk) {
+        window.addEventListener('load', function() {
+          navigator.serviceWorker
+            .register(new URL('sw.js', location.href).href, { updateViaCache: 'none' })
+            .catch(function(err) {
+              console.warn('[everything] Offline support unavailable:', err && err.message);
+            });
+        });
+      }
     })();
   </script>
 
