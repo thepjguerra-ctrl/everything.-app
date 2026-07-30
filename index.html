@@ -2482,6 +2482,23 @@ function ConfirmModal({ title, message, confirmLabel, onConfirm, onClose }) {
                 React.createElement("button", { onClick: onClose, style: { padding: "9px 16px", borderRadius: 4, cursor: "pointer", fontSize: 12.5, fontWeight: 700, background: "transparent", color: T.ink, border: `1.5px solid ${T.line}` } }, "Cancel"),
                 React.createElement("button", { onClick: () => { onConfirm(); onClose(); }, style: { padding: "9px 18px", borderRadius: 4, cursor: "pointer", fontSize: 12.5, fontWeight: 800, background: T.red, color: "#FFFFFF", border: "none", letterSpacing: "0.02em" } }, confirmLabel || "Delete")))));
 }
+// ── Image attachment lightbox ─────────────────────────────────────────────────
+// The only attachment kind that needed a real "view" action: audio already has
+// its own <audio controls> player, and PDFs already open via a plain <a
+// target="_blank"> against the data URL (a data: URL PDF opens/renders fine in
+// a new tab — no viewer of our own required). An image just sat there as a
+// small static thumbnail with nothing behind it, so this is that missing click
+// target — full-size, on the same in-app modal visual language as everything
+// else here instead of a bare new-tab image view.
+function ImageLightbox({ attachment, onClose }) {
+    return (React.createElement("div", { onClick: onClose, style: { position: "absolute", inset: 0, background: "rgba(0,0,0,0.82)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 65, padding: "2rem" } },
+        React.createElement("div", { onClick: e => e.stopPropagation(), style: { maxWidth: "min(90vw, 900px)", maxHeight: "90vh", display: "flex", flexDirection: "column", alignItems: "center", gap: 10 } },
+            React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", width: "100%" } },
+                React.createElement("button", { onClick: onClose, title: "Close preview", style: { background: "rgba(255,255,255,0.12)", border: "none", borderRadius: 4, cursor: "pointer", color: "#FFFFFF", padding: "6px 8px", display: "flex" } },
+                    React.createElement("i", { className: "ti ti-x", style: { fontSize: 16 } }))),
+            React.createElement("img", { src: attachment.dataUrl, alt: attachment.name, style: { maxWidth: "100%", maxHeight: "calc(90vh - 50px)", objectFit: "contain", borderRadius: 4, boxShadow: "0 8px 32px rgba(0,0,0,0.4)" } }),
+            React.createElement("div", { style: { fontSize: 12, color: "rgba(255,255,255,0.75)" } }, attachment.name))));
+}
 // ── Onboarding walkthrough — first-launch welcome modal ──────────────────────
 // Three slides teaching the core loop: Dump → Review & Sort → Today. Each
 // slide's headline reuses the real red-accent wording from the page it's
@@ -2826,6 +2843,7 @@ function App() {
     const [noteEditDraft, setNoteEditDraft] = useState(null); // { id, title, body, area, attachment } — local edits before they're committed
     const [noteAttaching, setNoteAttaching] = useState(false); // true while a picked file is being read/encoded
     const [noteAttachError, setNoteAttachError] = useState(null); // user-facing message when a file is rejected or won't fit in storage
+    const [lightboxAttachment, setLightboxAttachment] = useState(null); // image attachment currently shown full-size in ImageLightbox, or null
     const noteAttachInputRef = useRef(null);
     // Notes editor pane — no max height, no inner scrollbar. The textarea
     // grows to exactly fit whatever's written so nothing is ever cut off or
@@ -5270,11 +5288,21 @@ function App() {
             }, React.createElement("i", { className: "ti ti-x" }));
             const meta = React.createElement("div", { style: { fontSize: 10.5, color: T.ink3, marginTop: 2 } }, att.name, " · ", formatFileSize(att.size));
             if (kind === "image") {
+                // The thumbnail + name/meta are one clickable target that opens the
+                // full-size ImageLightbox — same "click the attachment to view it"
+                // shape as the PDF row's link below, just rendered as a modal
+                // instead of a new tab since an image (unlike a PDF) has nothing
+                // useful to show in a bare browser tab beyond what's already visible
+                // here at thumbnail size.
                 return React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, border: T.cardBorder, borderRadius: 4, padding: 8, marginBottom: 14, background: T.panelAlt } },
-                    React.createElement("img", { src: att.dataUrl, alt: att.name, style: { width: 52, height: 52, objectFit: "cover", borderRadius: 3, flexShrink: 0, border: T.cardBorder } }),
-                    React.createElement("div", { style: { minWidth: 0, flex: 1 } },
-                        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: T.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, att.name),
-                        meta),
+                    React.createElement("button", {
+                        type: "button", onClick: () => setLightboxAttachment(att), title: "View image",
+                        style: { display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1, background: "none", border: "none", padding: 0, margin: 0, cursor: "pointer", textAlign: "left", font: "inherit", color: "inherit" }
+                    },
+                        React.createElement("img", { src: att.dataUrl, alt: att.name, style: { width: 52, height: 52, objectFit: "cover", borderRadius: 3, flexShrink: 0, border: T.cardBorder } }),
+                        React.createElement("div", { style: { minWidth: 0, flex: 1 } },
+                            React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: T.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, att.name),
+                            meta)),
                     removeBtn);
             }
             if (kind === "audio") {
@@ -5699,6 +5727,7 @@ function App() {
             // Reuses ProjectItemEditModal for list items too — same generic {item, onSave, onClose} contract, nothing Project-specific inside it.
             listItemEdit && React.createElement(ProjectItemEditModal, { item: listItemEdit.item, onSave: (text) => saveListItemText(listItemEdit.listId, listItemEdit.item.id, text), onClose: () => setListItemEdit(null) }),
             confirmState && React.createElement(ConfirmModal, { title: confirmState.title, message: confirmState.message, confirmLabel: confirmState.confirmLabel, onConfirm: confirmState.onConfirm, onClose: () => setConfirmState(null) }),
+            lightboxAttachment && React.createElement(ImageLightbox, { attachment: lightboxAttachment, onClose: () => setLightboxAttachment(null) }),
             reviewItems && ReviewPanel(),
             onboardingOpen && React.createElement(OnboardingModal, { onClose: closeOnboarding })),
             // "— Night Desk" style caption anchored just under the poster frame —
