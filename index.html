@@ -1024,6 +1024,29 @@ function isPastEvent(ev) {
     today.setHours(0, 0, 0, 0);
     return dates.every(d => d < today);
 }
+// Words after which an ACTION verb is a CONTINUATION of the thought already in
+// progress, not the start of a new item. Without this guard the splitter broke
+// run-on conversational notes at every action word — "…need to make…" and "…so
+// it can organize this for me" became separate fragments — and it also severed
+// action words used as plain nouns ("send her a text", "check my email", "hop
+// on the call") from the sentence they belong to.
+const VERB_CONT = new RegExp("^(?:" + [
+    // infinitive / modal / auxiliary — "to make", "can organize", "should send"
+    "to|can|could|should|would|will|shall|might|must|may|let|lets",
+    "gotta|gonna|wanna|need|needs|needed|want|wants|wanted|try|trying|tried",
+    "have|has|had|am|is|are|was|were|be|been|being|do|does|did|get|gets|got",
+    "help|please|maybe|probably|actually|basically|really|just|only|still|not",
+    // alternative / contrastive connectors modify the thought in progress
+    // ("execute or organize", "email or call her") — unlike the enumerating
+    // ones (and / then / plus), which do introduce a genuinely new item.
+    "or|nor|but",
+    // contractions — "I'll call", "we'd email", "let's plan"
+    "[\\w]+['’](?:ll|d|ve|s|re|m)",
+    // determiner / possessive / preposition — the action word is a NOUN here
+    "a|an|the|my|your|his|her|its|our|their|this|that|these|those",
+    "some|any|no|one|another|each|every|more|less|last|first|second",
+    "of|for|in|on|at|with|without|via|per|about|into|onto|from|by|as",
+].join("|") + ")$", "i");
 function preSplitDump(text) {
     const ACTIONS = "(work\\s+on|follow\\s+up|text|call|email|message|reply|send|plan|edit|buy|book|schedule|clean|research|organize|add|make|create)";
     // Never tear an action verb away from the time/day that anchors it —
@@ -1031,9 +1054,26 @@ function preSplitDump(text) {
     return text.replace(new RegExp("([\\w:'’-]+)\\s+" + ACTIONS + "(?=\\s|$)", "gi"), (m, prev, verb) => {
         if (/^\d{1,2}(?::\d{2})?(?:am|pm)?$/i.test(prev)) return m;
         if (/^(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)$/i.test(prev)) return m;
+        if (VERB_CONT.test(prev)) return m;
         return prev + "\n" + verb;
     });
 }
+// Strips connector words stranded at the edges of a chunk by an upstream split
+// ("…the invoice and" + "buy groceries"). Runs until stable so stacked
+// connectors ("and also") come off too. Same intent as the sentinel-drop trick
+// in splitEventChunks, applied to every split path in one place.
+function trimDanglingConnectors(s) {
+    let prev;
+    do {
+        prev = s;
+        s = s.replace(/^(?:and|then|also|plus|or|but|so|&)\b[\s,]*/i, "")
+             .replace(/[\s,]*\b(?:and|then|also|plus|or|but|so|&)$/i, "")
+             .trim();
+    } while (s !== prev);
+    return s;
+}
+// A comma fragment that reads like a real to-do rather than a clause of prose.
+const LIST_ITEM_START = /^(?:work\s+on|follow\s+up|get\s+back\s+to|reach\s+out|check\s+in|pick\s+up|drop\s+off|text|call|email|message|reply|respond|send|plan|edit|buy|book|schedule|clean|research|organize|add|create|make|finish|start|write|read|review|pay|order|fix|update|post|upload|record|shoot|film|prep|prepare|submit|renew|cancel|confirm|print|pack|wash|cook|grab)\b/i;
 // ── Smart dump splitter ───────────────────────────────────────────────────────
 // Handles dash-lists, newline paragraphs, preamble headers, and comma lists.
 function smartSplitDump(text) {
@@ -1049,19 +1089,31 @@ function smartSplitDump(text) {
     // Dash/bullet list
     if (/^\s*[-•*]\s/m.test(t)) {
         return t.split(/\n+/)
-            .map(l => l.trim().replace(/^[-•*·]\s*/, "").trim())
+            .map(l => trimDanglingConnectors(l.trim().replace(/^[-•*·]\s*/, "").trim()))
             .filter(s => s.length > 3 && !HEADER_RE.test(s));
     }
     // Newline-separated paragraphs
     if (/\n/.test(t)) {
-        return t.split(/\n+/).map(s => s.trim()).filter(s => s.length > 3 && !HEADER_RE.test(s));
+        return t.split(/\n+/).map(s => trimDanglingConnectors(s.trim())).filter(s => s.length > 3 && !HEADER_RE.test(s));
     }
     // Sentence-boundary split
     if (/[.!?]\s+[A-Z]/.test(t)) {
         return t.split(/(?<=[.!?])\s+(?=[A-Z"'])|(?<=[.!?])\s+/).map(s => s.trim()).filter(s => s.length > 3);
     }
-    // Comma/semicolon list
-    return t.split(/[,;]+/).map(s => s.trim()).filter(s => s.length > 3);
+    // Comma/semicolon list — but ONLY when the fragments actually read as a list
+    // of items. Conversational notes lean on commas as breath marks ("…like how
+    // apple does it, not this cramped thing…"), and splitting those is what
+    // turned one running thought into a pile of meaningless items. Treat it as a
+    // real list when at least two fragments open with an action verb, or when
+    // every fragment is terse enough to be a jotted item ("milk, eggs, bread").
+    const parts = t.split(/[,;]+/).map(s => s.trim()).filter(s => s.length > 3);
+    if (parts.length < 2)
+        return parts;
+    const verbInitial = parts.filter(p => LIST_ITEM_START.test(p)).length;
+    const allTerse = parts.every(p => p.split(/\s+/).length <= 4);
+    if (verbInitial >= 2 || allTerse)
+        return parts.map(trimDanglingConnectors).filter(s => s.length > 3);
+    return [t];
 }
 // ── Multi-event chunk splitter ────────────────────────────────────────────────
 // Splits one chunk into separate event fragments when it carries multiple
