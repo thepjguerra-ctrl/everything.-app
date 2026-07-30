@@ -679,10 +679,10 @@ const MODULE_META = [
     { key: "ideas", label: "Ideas", icon: "ti-bulb", default: false },
     { key: "projects", label: "Projects", icon: "ti-folder", default: false },
     { key: "lists", label: "Lists", icon: "ti-list-check", default: false },
-    // locked: true — not ready for anyone but Pj to see yet. Settings shows this
-    // as "Coming Soon" instead of a normal On/Off toggle until unlocked with
-    // TIMECLOCK_PIN (see below). Once unlocked it's just a normal module —
-    // `locked` only affects what Settings renders, not runtime behavior.
+    // locked: true — not finished yet, so it stays hidden by default. Settings
+    // shows this as "Coming Soon" instead of a normal On/Off toggle until
+    // unlocked with TIMECLOCK_PIN (see below). Once unlocked it's just a normal
+    // module — `locked` only affects what Settings renders, not runtime behavior.
     { key: "timeclock", label: "Time Clock", icon: "ti-clock-play", default: false, locked: true },
 ];
 function normalizeModules(raw) {
