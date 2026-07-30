@@ -188,6 +188,13 @@
     .ev-mic-btn.listening {
       animation: ev-mic-pulse 1.3s ease-in-out infinite;
     }
+    /* Same "something is live" pulse as the mic button, reused for the
+       running-timer dot in Time Clock — a running timer is the same kind of
+       ongoing-recording state a listening mic is. */
+    .ev-timer-pulse {
+      border-radius: 50%;
+      animation: ev-mic-pulse 1.3s ease-in-out infinite;
+    }
 
     /* ── iOS auto-zoom fix ───────────────────────────────────────────── */
     /* iOS Safari zooms the viewport when focusing any text input under   */
@@ -422,6 +429,36 @@ function normalizeList(raw) {
         createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
     };
 }
+// ── Time Clock (first per-section add-on — see MODULE_META) ──────────────────
+// A logged block of time: how long, what it was for (note), and which Area it
+// belongs to. "Freelancing" isn't a field of its own — it's just entries
+// tagged area:"work", the same Personal/Work tagging Notes/Projects/Lists
+// already use. A future add-on for a different section would tag its own
+// data by area the same way; nothing here is Time-Clock-specific about it.
+function normalizeTimeEntry(raw) {
+    if (!raw || typeof raw !== "object")
+        return null;
+    return {
+        id: typeof raw.id === "number" ? raw.id : uid(),
+        area: safeArea(raw.area),
+        note: typeof raw.note === "string" ? raw.note : "",
+        minutes: typeof raw.minutes === "number" && raw.minutes >= 0 ? raw.minutes : 0,
+        createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
+    };
+}
+// The one-and-only in-progress timer, if any. Persisted (not just in-memory)
+// so a running timer survives a reload/closed tab and keeps counting from its
+// real start time instead of silently losing the time in between — the most
+// important reliability property for a local, no-backend time clock.
+function normalizeRunningTimer(raw) {
+    if (!raw || typeof raw !== "object" || typeof raw.startedAt !== "number")
+        return null;
+    return {
+        area: safeArea(raw.area),
+        note: typeof raw.note === "string" ? raw.note : "",
+        startedAt: raw.startedAt,
+    };
+}
 function normalizeIdea(raw) {
     if (!raw || typeof raw !== "object")
         return null;
@@ -531,6 +568,29 @@ function formatFileSize(bytes) {
         return Math.max(1, Math.round(bytes / 1024)) + " KB";
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
+// Logged entries are rounded to the minute ("2h 15m") — sub-minute precision
+// isn't meaningful for work you're recording after the fact.
+function formatDuration(totalMinutes) {
+    const m = Math.round(totalMinutes);
+    if (m <= 0)
+        return "0m";
+    const h = Math.floor(m / 60), rem = m % 60;
+    if (h === 0)
+        return `${rem}m`;
+    if (rem === 0)
+        return `${h}h`;
+    return `${h}h ${rem}m`;
+}
+// A LIVE running timer shows seconds ("1:23:45") since it's actually ticking —
+// unlike a logged entry, the extra precision is genuinely visible in real time.
+function formatElapsedClock(ms) {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    const pad = n => String(n).padStart(2, "0");
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
 // ── Saved-state guards ───────────────────────────────────────────────────────
 // These prevent old or corrupted localStorage values from crashing the app on load.
 function safePreset(value) {
@@ -590,6 +650,7 @@ const MODULE_META = [
     { key: "ideas", label: "Ideas", icon: "ti-bulb", default: false },
     { key: "projects", label: "Projects", icon: "ti-folder", default: false },
     { key: "lists", label: "Lists", icon: "ti-list-check", default: false },
+    { key: "timeclock", label: "Time Clock", icon: "ti-clock-play", default: false },
 ];
 function normalizeModules(raw) {
     const src = (raw && typeof raw === "object") ? raw : {};
@@ -648,9 +709,12 @@ function migrateAppState(raw) {
         notes: Array.isArray(raw.notes) ? raw.notes.map(normalizeNote).filter(Boolean) : [],
         // lists: new in this release — older saves simply get []
         lists: Array.isArray(raw.lists) ? raw.lists.map(normalizeList).filter(Boolean) : [],
+        // timeEntries/runningTimer: new in this release — older saves simply get [] / null
+        timeEntries: Array.isArray(raw.timeEntries) ? raw.timeEntries.map(normalizeTimeEntry).filter(Boolean) : [],
+        runningTimer: normalizeRunningTimer(raw.runningTimer),
         // modules: which optional nav items are on; absent keys reconcile to canonical defaults
         modules: normalizeModules(raw.modules),
-        // bottomBarModule: which ONE optional module (Notes/Ideas/Projects/Lists) sits in
+        // bottomBarModule: which ONE optional module (see OPTIONAL_MODULE_KEYS) sits in
         // the mobile bottom bar instead of the "More" sheet. "notes" is the default so
         // existing saves keep the bar exactly as it always was — Notes on the bar.
         bottomBarModule: MODULE_META.some(m => m.key === raw.bottomBarModule) ? raw.bottomBarModule : "notes",
@@ -786,7 +850,7 @@ function autoBackupIfNeeded() {
 // reject files that parse as JSON but aren't actually a backup of this app
 // (migrateAppState is deliberately permissive about missing/malformed fields
 // within a real backup, so this check has to happen before it runs).
-const BACKUP_SHAPE_KEYS = ["plan", "rolling", "dumpItems", "calendarEvents", "projects", "completedToday", "doneLog", "widgets", "ideas", "notes", "lists", "modules", "workFolders", "appVersion", "activePreset", "organized", "todayDump", "introDismissed"];
+const BACKUP_SHAPE_KEYS = ["plan", "rolling", "dumpItems", "calendarEvents", "projects", "completedToday", "doneLog", "widgets", "ideas", "notes", "lists", "timeEntries", "modules", "workFolders", "appVersion", "activePreset", "organized", "todayDump", "introDismissed"];
 function looksLikeBackup(raw) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
         return false;
@@ -1507,15 +1571,17 @@ function useIsMobile(breakpoint = MOBILE_BREAKPOINT) {
 // Mobile nav split — the FIXED nav keys that always sit on the bottom bar vs.
 // always in the "More" sheet. Keys must match NAV's `key` values (built further
 // down in App from CORE_NAV_KEYS + the module toggles). The optional modules
-// (Notes/Ideas/Projects/Lists) are NOT listed here — they share one remaining
+// (OPTIONAL_MODULE_KEYS below) are NOT listed here — they share one remaining
 // bar slot, chosen in Settings via `bottomBarModule` (see App's mobileBarItems).
 const MOBILE_NAV_CONFIG = {
     bar: ["today", "dump", "calendar"],
     sheet: ["rolling", "done", "reset", "settings"],
 };
 // The optional modules, in the order they should fall back into "More"
-// when they aren't the one occupying the bottom-bar slot.
-const OPTIONAL_MODULE_KEYS = ["notes", "ideas", "projects", "lists"];
+// when they aren't the one occupying the bottom-bar slot. Adding a new
+// optional module = add it to MODULE_META above and to this list; NAV,
+// Settings, and the mobile bar/sheet split all key off these two already.
+const OPTIONAL_MODULE_KEYS = ["notes", "ideas", "projects", "lists", "timeclock"];
 // ── Shared styles ─────────────────────────────────────────────────────────────
 const C = {
     // Action card — solid border, soft shadow, slight offset for importance
@@ -2160,6 +2226,18 @@ function App() {
     const [ideas, setIdeas] = useState(() => S.ideas ?? []);
     const [notes, setNotes] = useState(() => S.notes ?? []);
     const [lists, setLists] = useState(() => S.lists ?? []);
+    const [timeEntries, setTimeEntries] = useState(() => S.timeEntries ?? []);
+    const [runningTimer, setRunningTimer] = useState(() => S.runningTimer ?? null); // { area, note, startedAt } | null — the one in-progress timer, if any
+    // Ticks once a second while a timer is running so the live elapsed display
+    // (and the "today" total that includes it) update in real time. Idle the
+    // rest of the time — no interval running when nothing's being timed.
+    const [nowTick, setNowTick] = useState(() => Date.now());
+    useEffect(() => {
+        if (!runningTimer)
+            return;
+        const id = setInterval(() => setNowTick(Date.now()), 1000);
+        return () => clearInterval(id);
+    }, [runningTimer]);
     const [workFolders] = useState(() => S.workFolders ?? []); // saved folders kept for backward-compat area tagging; no longer user-editable
     // Keep the module-level AREAS/AREA_MAP mirror in sync every render so the
     // picker, chips and filters always reflect the current Work folders.
@@ -2279,6 +2357,11 @@ function App() {
     const [newListName, setNewListName] = useState("");
     const [openListId, setOpenListId] = useState(null);
     const [listDraftInput, setListDraftInput] = useState({}); // keyed by listId — no sections, so one draft per list
+    const [timeEntryMode, setTimeEntryMode] = useState("timer"); // "timer" | "manual" — which draft card is showing
+    const [timeDraftArea, setTimeDraftArea] = useState(null);
+    const [timeDraftNote, setTimeDraftNote] = useState("");
+    const [manualHours, setManualHours] = useState("");
+    const [manualMinutes, setManualMinutes] = useState("");
     const [organizeStats, setOrganizeStats] = useState(null);
     const [reviewItems, setReviewItems] = useState(null);
     const [pendingDumpIds, setPendingDumpIds] = useState(null);
@@ -2406,6 +2489,7 @@ function App() {
     const [projectAreaFilter, setProjectAreaFilter] = useState("all");
     const [newListArea, setNewListArea] = useState(null);
     const [listAreaFilter, setListAreaFilter] = useState("all");
+    const [timeAreaFilter, setTimeAreaFilter] = useState("all");
     const [addingCalEvent, setAddingCalEvent] = useState(false);
     const [calViewYear, setCalViewYear] = useState(() => new Date().getFullYear());
     const [calViewMonth, setCalViewMonth] = useState(() => new Date().getMonth());
@@ -2417,10 +2501,10 @@ function App() {
     useEffect(() => {
         saveAppState({
             organized, todayDump, plan, rolling, dumpItems,
-            widgets, activePreset, modules, bottomBarModule, introDismissed, onboardingSeen, projects, calendarEvents, completedToday, doneLog, ideas, notes, lists, workFolders,
+            widgets, activePreset, modules, bottomBarModule, introDismissed, onboardingSeen, projects, calendarEvents, completedToday, doneLog, ideas, notes, lists, timeEntries, runningTimer, workFolders,
         });
     }, [organized, todayDump, plan, rolling, dumpItems,
-        widgets, activePreset, modules, bottomBarModule, introDismissed, onboardingSeen, projects, calendarEvents, ideas, notes, lists, workFolders]);
+        widgets, activePreset, modules, bottomBarModule, introDismissed, onboardingSeen, projects, calendarEvents, ideas, notes, lists, timeEntries, runningTimer, workFolders]);
     const allTasks = SECS.flatMap(s => plan[s.key] || []);
     const doneTasks = allTasks.filter(t => t.done);
     const notDoneTasks = allTasks.filter(t => !t.done);
@@ -2843,7 +2927,7 @@ function App() {
         if (turningOff && tab === key)
             setTab("today");
     }
-    // The optional modules (Notes/Ideas/Projects/Lists) share ONE mobile bottom-bar
+    // The optional modules (see OPTIONAL_MODULE_KEYS) share ONE mobile bottom-bar
     // slot, symmetrically — picking one clears any previous pick automatically
     // since bottomBarModule only ever holds a single key. Picking the module
     // already in that slot again clears it back to "None" (bar stays plain).
@@ -4129,6 +4213,39 @@ function App() {
         setLists(l => l.map(x => x.id !== listId ? x : { ...x, items: x.items.map(it => it.id === itemId ? { ...it, text: t } : it) }));
         setListItemEdit(null);
     }
+    // ── Time Clock helpers ──────────────────────────────────────────────────
+    // Area stays sticky across entries (you're usually logging the same
+    // section repeatedly); the note is per-entry, so it clears after each one.
+    function startTimer(area, note) {
+        if (runningTimer)
+            return; // one timer at a time
+        setRunningTimer({ area, note: note.trim(), startedAt: Date.now() });
+        setNowTick(Date.now());
+        setTimeDraftNote("");
+    }
+    function stopTimer() {
+        if (!runningTimer)
+            return;
+        const minutes = Math.max(1, Math.round((Date.now() - runningTimer.startedAt) / 60000));
+        setTimeEntries(prev => [...prev, { id: uid(), area: runningTimer.area, note: runningTimer.note, minutes, createdAt: Date.now() }]);
+        setRunningTimer(null);
+    }
+    // Discards the in-progress timer without logging anything — for "started
+    // by mistake" rather than "forgot to stop it eventually."
+    function cancelTimer() {
+        setRunningTimer(null);
+    }
+    function addManualEntry(area, note, minutes) {
+        if (!(minutes > 0))
+            return;
+        setTimeEntries(prev => [...prev, { id: uid(), area, note: note.trim(), minutes, createdAt: Date.now() }]);
+        setTimeDraftNote("");
+        setManualHours("");
+        setManualMinutes("");
+    }
+    function deleteTimeEntry(id) {
+        setTimeEntries(prev => prev.filter(e => e.id !== id));
+    }
     const ProjectsView = () => {
         // ── NO HOOKS — all state lives in App ──────────────────────────────────
         const openProject = projects.find(p => p.id === openProjectId) || null;
@@ -4431,6 +4548,97 @@ function App() {
                 " ADD LIST")),
             listAreaAll.length === 0 && lists.length > 0 && listAreaFilter !== "all" && (React.createElement("div", { style: { border: `1.5px dashed ${T.lineSoft}`, borderRadius: 3, padding: "1.6rem", textAlign: "center", fontSize: 12, color: T.ink3 } }, "No lists in this area yet.")),
             listAreaAll.map(list => ListCard(list))));
+    };
+    // ── Time Clock view ────────────────────────────────────────────────────────
+    // The first per-section add-on: entries are tagged by Area exactly like
+    // Notes/Projects/Lists, so "freelancing" is just the Work-tagged entries —
+    // no new section concept, and any future add-on for a different section
+    // would attach the same way (tag its data by area, filter by area).
+    const TimeClockView = () => {
+        // ── NO HOOKS — all state lives in App ──────────────────────────────────
+        const liveMs = runningTimer ? Math.max(0, nowTick - runningTimer.startedAt) : 0;
+        const liveMinutes = liveMs / 60000;
+        const inFilter = e => areaMatchesFilter(e.area, timeAreaFilter);
+        const filtered = timeEntries.filter(inFilter);
+        const runningInFilter = !!runningTimer && areaMatchesFilter(runningTimer.area, timeAreaFilter);
+        const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+        const weekStart = new Date(dayStart); weekStart.setDate(weekStart.getDate() - 6); // last 7 days, incl. today
+        const sum = (since) => filtered.filter(e => e.createdAt >= since).reduce((acc, e) => acc + e.minutes, 0);
+        const todayMinutes = sum(dayStart.getTime()) + (runningInFilter ? liveMinutes : 0);
+        const weekMinutes = sum(weekStart.getTime()) + (runningInFilter ? liveMinutes : 0);
+        const allMinutes = filtered.reduce((acc, e) => acc + e.minutes, 0) + (runningInFilter ? liveMinutes : 0);
+        const sorted = [...filtered].sort((a, b) => b.createdAt - a.createdAt);
+        function entryAgo(e) {
+            const d = Math.floor((Date.now() - e.createdAt) / 86400000);
+            return d === 0 ? "today" : d === 1 ? "yesterday" : `${d}d ago`;
+        }
+        const manualTotal = (parseInt(manualHours, 10) || 0) * 60 + (parseInt(manualMinutes, 10) || 0);
+        const inputStyle = { fontSize: 13, padding: "8px 10px", background: T.panelAlt, border: `1.5px solid ${T.lineSoft}`, borderRadius: 3, color: T.ink, outline: "none", fontFamily: "inherit", boxSizing: "border-box" };
+        return (React.createElement("div", { style: { padding: "1.6rem 1.8rem", maxWidth: 640, boxSizing: "border-box" } },
+            React.createElement("div", { style: { marginBottom: 20 } },
+                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3, marginBottom: 4 } }, new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })),
+                React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 38, lineHeight: 0.9, color: T.ink, textTransform: "uppercase", letterSpacing: "0" } },
+                    "TIME CLOCK, ",
+                    React.createElement("span", { style: { color: T.red } }, "LOGGED.")),
+                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: T.ink3, marginTop: 6 } }, "HOURS WORKED, KEPT HONEST.")),
+            // Stat tiles — same [label, value, isRed] pattern as Done's summary row
+            React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" } }, [
+                ["TODAY", todayMinutes, runningInFilter],
+                ["LAST 7 DAYS", weekMinutes, false],
+                ["ALL TIME", allMinutes, false],
+            ].map(([label, mins, isRed]) => (React.createElement("div", { key: label, style: { flex: 1, minWidth: 100, border: isRed ? `1.5px solid ${T.red}` : T.cardBorder, borderRadius: 4, padding: "10px 14px", background: T.panel, boxShadow: isRed ? `0 0 0 3px rgba(224,48,48,0.12)` : T.cardShadow } },
+                React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 26, lineHeight: 1, color: isRed ? T.red : T.ink } }, formatDuration(mins)),
+                React.createElement("div", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: T.ink3, marginTop: 4 } }, label))))),
+            // Area filter — Personal vs Work, plus each Work folder
+            React.createElement("div", { style: { display: "flex", gap: 5, marginBottom: 16, flexWrap: "wrap", alignItems: "center" } },
+                React.createElement("span", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3, marginRight: 3 } }, "AREA"),
+                areaFilters().map(f => React.createElement("button", { key: f.key, onClick: () => setTimeAreaFilter(f.key), style: isMobile ? C.pill(timeAreaFilter === f.key, true) : { ...C.pill(timeAreaFilter === f.key), fontSize: 10, padding: "4px 10px" } }, f.label))),
+            // Running timer card, OR the start/log draft card — never both
+            runningTimer
+                ? React.createElement("div", { style: { border: `1.5px solid ${T.red}`, borderRadius: 4, padding: "16px", background: T.panel, marginBottom: 16, boxShadow: `0 0 0 3px rgba(224,48,48,0.12), ${T.cardShadow}` } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" } },
+                        React.createElement("span", { className: "ev-timer-pulse", style: { width: 8, height: 8, borderRadius: "50%", background: T.red, flexShrink: 0 } }),
+                        React.createElement("span", { style: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: T.red } }, "Running"),
+                        runningTimer.area && React.createElement(AreaChip, { areaKey: runningTimer.area })),
+                    React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 44, lineHeight: 1, color: T.ink, marginBottom: runningTimer.note ? 6 : 14 } }, formatElapsedClock(liveMs)),
+                    runningTimer.note && React.createElement("div", { style: { fontSize: 13, color: T.ink2, marginBottom: 14, lineHeight: 1.4 } }, runningTimer.note),
+                    React.createElement("div", { style: { display: "flex", gap: 8 } },
+                        React.createElement("button", { onClick: stopTimer, style: { ...C.btnPrimary, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 } },
+                            React.createElement("i", { className: "ti ti-player-stop", style: { fontSize: 14 } }),
+                            " Stop & Log"),
+                        React.createElement("button", { onClick: () => askConfirm({ title: "Discard timer", message: "This running timer will be discarded without logging any time.", confirmLabel: "Discard timer", onConfirm: cancelTimer }), style: { padding: "9px 16px", borderRadius: 4, cursor: "pointer", fontSize: 12.5, fontWeight: 600, background: "transparent", color: T.ink3, border: `1px solid ${T.line}` } }, "Discard")))
+                : React.createElement("div", { style: { border: T.cardBorder, borderRadius: 4, padding: "16px", background: T.panel, marginBottom: 16, boxShadow: T.cardShadow } },
+                    React.createElement("div", { style: { display: "flex", gap: 5, marginBottom: 14 } },
+                        ["timer", "manual"].map(mode => React.createElement("button", { key: mode, onClick: () => setTimeEntryMode(mode), style: isMobile ? C.pill(timeEntryMode === mode, true) : { ...C.pill(timeEntryMode === mode), fontSize: 11 } }, mode === "timer" ? "Start a Timer" : "Log Manually"))),
+                    React.createElement("div", { style: { marginBottom: 12 } },
+                        React.createElement("input", { value: timeDraftNote, onChange: e => setTimeDraftNote(e.target.value), placeholder: "What are you working on? (optional)", style: { ...inputStyle, width: "100%" } })),
+                    React.createElement("div", { style: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: T.ink3, marginBottom: 6 } }, "AREA"),
+                    React.createElement("div", { style: { marginBottom: 14 } },
+                        React.createElement(AreaPicker, { value: timeDraftArea, onChange: setTimeDraftArea })),
+                    timeEntryMode === "timer"
+                        ? React.createElement("button", { onClick: () => startTimer(timeDraftArea, timeDraftNote), style: { ...C.btnPrimary, flex: "none", padding: "9px 20px", display: "inline-flex", alignItems: "center", gap: 6 } },
+                            React.createElement("i", { className: "ti ti-player-play", style: { fontSize: 14 } }),
+                            " Start Timer")
+                        : React.createElement(React.Fragment, null,
+                            React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 14 } },
+                                React.createElement("input", { type: "number", min: 0, inputMode: "numeric", value: manualHours, onChange: e => setManualHours(e.target.value), placeholder: "0", style: { ...inputStyle, width: 64 } }),
+                                React.createElement("span", { style: { fontSize: 11, color: T.ink3 } }, "hours"),
+                                React.createElement("input", { type: "number", min: 0, max: 59, inputMode: "numeric", value: manualMinutes, onChange: e => setManualMinutes(e.target.value), placeholder: "0", style: { ...inputStyle, width: 64 } }),
+                                React.createElement("span", { style: { fontSize: 11, color: T.ink3 } }, "minutes")),
+                            React.createElement("button", { onClick: () => addManualEntry(timeDraftArea, timeDraftNote, manualTotal), disabled: !(manualTotal > 0), style: { flex: "none", padding: "9px 20px", borderRadius: 4, background: manualTotal > 0 ? T.ink : T.panelAlt, color: manualTotal > 0 ? "#fff" : T.ink3, border: "none", fontWeight: 700, fontSize: 12.5, cursor: manualTotal > 0 ? "pointer" : "default" } }, "Log Entry"))),
+            sorted.length === 0 && (React.createElement("div", { style: { border: `2px dashed ${T.lineSoft}`, borderRadius: 3, padding: "2.4rem 2rem", textAlign: "center" } },
+                React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 900, fontSize: 20, color: T.ink3, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 } }, "NOTHING LOGGED YET."),
+                React.createElement("div", { style: { fontSize: 12.5, color: T.ink3, lineHeight: 1.6, maxWidth: 320, margin: "0 auto" } }, "Start a timer or log hours manually, and they'll show up here."))),
+            sorted.length > 0 && React.createElement("div", { style: { border: T.cardBorder, borderRadius: 4, padding: "6px 16px", background: T.panel, boxShadow: T.cardShadow } },
+                sorted.map((e, i) => React.createElement("div", { key: e.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: i < sorted.length - 1 ? `1px dashed ${T.lineSoft}` : "none" } },
+                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+                            React.createElement("span", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 15, color: T.ink } }, formatDuration(e.minutes)),
+                            e.area && React.createElement(AreaChip, { areaKey: e.area }),
+                            React.createElement("span", { style: { fontSize: 10, color: T.ink3, marginLeft: "auto" } }, entryAgo(e))),
+                        e.note && React.createElement("div", { style: { fontSize: 12, color: T.ink2, marginTop: 2, lineHeight: 1.4 } }, e.note)),
+                    React.createElement("button", { onClick: () => deleteTimeEntry(e.id), title: "Delete entry", className: "ev-handle", style: { ...C.iBtn(isMobile), padding: isMobile ? "10px" : "0 2px", flexShrink: 0 } },
+                        React.createElement("i", { className: "ti ti-x", style: { fontSize: 12 } }))))) ));
     };
     // ── Ideas / Notes view ───────────────────────────────────────────────────
     const IdeasView = () => {
@@ -4890,6 +5098,7 @@ function App() {
         { key: "ideas", icon: "ti-bulb", label: "Ideas", badge: ideas.filter(i => !i.archived).length || undefined },
         { key: "projects", icon: "ti-folder", label: "Projects" },
         { key: "lists", icon: "ti-list-check", label: "Lists", badge: lists.length || undefined },
+        { key: "timeclock", icon: "ti-clock-play", label: "Time Clock" },
         { key: "settings", icon: "ti-settings", label: "Settings" },
     ].filter(n => CORE_NAV_KEYS.includes(n.key) || modules[n.key]);
     // Mobile bottom bar + "More" sheet both just pull from NAV by key, via
@@ -5037,6 +5246,7 @@ function App() {
                 tab === "reset" && ResetView(),
                 tab === "projects" && ProjectsView(),
                 tab === "lists" && ListsView(),
+                tab === "timeclock" && TimeClockView(),
                 tab === "settings" && React.createElement(SettingsView, { modules, onToggleModule: toggleModule, bottomBarModule, onPickBottomBarModule: pickBottomBarModule, onReplayOnboarding: replayOnboarding })),
             modal && React.createElement(TaskModal, { task: modal, onSave: saveTask, onDelete: deleteTask, onClose: () => setModal(null) }),
             calModal && React.createElement(CalendarEventModal, { event: calModal, onSave: saveCalendarEvent, onDelete: deleteCalendarEvent, onClose: () => setCalModal(null) }),
