@@ -3030,8 +3030,21 @@ function App() {
         const el = noteBodyRef.current;
         if (!el)
             return;
+        // Measuring the "shrink" case requires resetting height to auto before
+        // reading scrollHeight, but on a long note that momentary shrink makes
+        // the page shorter than the current scroll offset — the browser has no
+        // choice but to clamp scrollTop down to fit, which reads as the cursor
+        // jumping to the end of the note on every keystroke (or every autosave
+        // re-render). Growing the box back afterward doesn't undo that clamp,
+        // so we snapshot the scroll position and restore it once the resize is
+        // done, keeping the user exactly where they were editing.
+        const scroller = document.scrollingElement || document.documentElement;
+        const prevScrollTop = scroller.scrollTop;
+        const prevScrollLeft = scroller.scrollLeft;
         el.style.height = "auto";
         el.style.height = Math.max(el.scrollHeight, 480) + "px";
+        scroller.scrollTop = prevScrollTop;
+        scroller.scrollLeft = prevScrollLeft;
         if (pendingNoteFocusRef.current) {
             pendingNoteFocusRef.current = false;
             try { el.focus(); } catch (e) { /* no-op if focus can't be set */ }
