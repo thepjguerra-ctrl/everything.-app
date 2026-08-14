@@ -494,6 +494,11 @@ function normalizeRunningTimer(raw) {
         area: safeArea(raw.area),
         note: typeof raw.note === "string" ? raw.note : "",
         startedAt: raw.startedAt,
+        // Timestamp the timer was paused at, or null while running. Elapsed
+        // time is always "freeze point minus startedAt" (see pauseTimer/
+        // resumeTimer below), so nothing else that reads startedAt needs to
+        // change to support pausing.
+        pausedAt: typeof raw.pausedAt === "number" ? raw.pausedAt : null,
     };
 }
 function normalizeIdea(raw) {
@@ -2863,8 +2868,8 @@ function App() {
     // rest of the time — no interval running when nothing's being timed.
     const [nowTick, setNowTick] = useState(() => Date.now());
     useEffect(() => {
-        if (!runningTimer)
-            return;
+        if (!runningTimer || runningTimer.pausedAt)
+            return; // idle while nothing's running, or while paused (the clock is frozen)
         const id = setInterval(() => setNowTick(Date.now()), 1000);
         return () => clearInterval(id);
     }, [runningTimer]);
@@ -4877,14 +4882,37 @@ function App() {
     function startTimer(area, note) {
         if (runningTimer)
             return; // one timer at a time
-        setRunningTimer({ area, note: note.trim(), startedAt: Date.now() });
+        setRunningTimer({ area, note: note.trim(), startedAt: Date.now(), pausedAt: null });
         setNowTick(Date.now());
         setTimeDraftNote("");
+    }
+    // Freezes the elapsed display at the moment of pausing without losing the
+    // real startedAt (still needed for resume math and for the "stop while
+    // paused" case below).
+    function pauseTimer() {
+        setRunningTimer(t => (t && !t.pausedAt) ? { ...t, pausedAt: Date.now() } : t);
+    }
+    // Folds the paused span out of the timer by pushing startedAt forward by
+    // however long it was paused — every other calculation already reads
+    // elapsed as "freeze point minus startedAt", so nothing downstream needs
+    // to know a pause ever happened.
+    function resumeTimer() {
+        setRunningTimer(t => {
+            if (!t || !t.pausedAt)
+                return t;
+            const pausedMs = Date.now() - t.pausedAt;
+            return { ...t, startedAt: t.startedAt + pausedMs, pausedAt: null };
+        });
+        setNowTick(Date.now());
     }
     function stopTimer() {
         if (!runningTimer)
             return;
-        const minutes = Math.max(1, Math.round((Date.now() - runningTimer.startedAt) / 60000));
+        // If it's stopped mid-pause, count only up to the freeze point — not
+        // however much real time has passed since — so paused time never
+        // silently gets logged as worked time.
+        const stopAt = runningTimer.pausedAt || Date.now();
+        const minutes = Math.max(1, Math.round((stopAt - runningTimer.startedAt) / 60000));
         setTimeEntries(prev => [...prev, { id: uid(), area: runningTimer.area, note: runningTimer.note, minutes, createdAt: Date.now() }]);
         setRunningTimer(null);
     }
@@ -5214,7 +5242,7 @@ function App() {
     // would attach the same way (tag its data by area, filter by area).
     const TimeClockView = () => {
         // ── NO HOOKS — all state lives in App ──────────────────────────────────
-        const liveMs = runningTimer ? Math.max(0, nowTick - runningTimer.startedAt) : 0;
+        const liveMs = runningTimer ? Math.max(0, (runningTimer.pausedAt || nowTick) - runningTimer.startedAt) : 0;
         const liveMinutes = liveMs / 60000;
         const inFilter = e => areaMatchesFilter(e.area, timeAreaFilter);
         const filtered = timeEntries.filter(inFilter);
@@ -5253,17 +5281,24 @@ function App() {
                 areaFilters().map(f => React.createElement("button", { key: f.key, onClick: () => setTimeAreaFilter(f.key), style: isMobile ? C.pill(timeAreaFilter === f.key, true) : { ...C.pill(timeAreaFilter === f.key), fontSize: 10, padding: "4px 10px" } }, f.label))),
             // Running timer card, OR the start/log draft card — never both
             runningTimer
-                ? React.createElement("div", { style: { border: `1.5px solid ${T.red}`, borderRadius: 4, padding: "16px", background: T.panel, marginBottom: 16, boxShadow: `0 0 0 3px rgba(224,48,48,0.12), ${T.cardShadow}` } },
+                ? React.createElement("div", { style: { border: `1.5px solid ${runningTimer.pausedAt ? T.ink3 : T.red}`, borderRadius: 4, padding: "16px", background: T.panel, marginBottom: 16, boxShadow: runningTimer.pausedAt ? T.cardShadow : `0 0 0 3px rgba(224,48,48,0.12), ${T.cardShadow}` } },
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" } },
-                        React.createElement("span", { className: "ev-timer-pulse", style: { width: 8, height: 8, borderRadius: "50%", background: T.red, flexShrink: 0 } }),
-                        React.createElement("span", { style: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: T.red } }, "Running"),
+                        React.createElement("span", { className: runningTimer.pausedAt ? "" : "ev-timer-pulse", style: { width: 8, height: 8, borderRadius: "50%", background: runningTimer.pausedAt ? T.ink3 : T.red, flexShrink: 0 } }),
+                        React.createElement("span", { style: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: runningTimer.pausedAt ? T.ink3 : T.red } }, runningTimer.pausedAt ? "Paused" : "Running"),
                         runningTimer.area && React.createElement(AreaChip, { areaKey: runningTimer.area })),
-                    React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 44, lineHeight: 1, color: T.ink, marginBottom: runningTimer.note ? 6 : 14 } }, formatElapsedClock(liveMs)),
+                    React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 44, lineHeight: 1, color: runningTimer.pausedAt ? T.ink2 : T.ink, marginBottom: runningTimer.note ? 6 : 14 } }, formatElapsedClock(liveMs)),
                     runningTimer.note && React.createElement("div", { style: { fontSize: 13, color: T.ink2, marginBottom: 14, lineHeight: 1.4 } }, runningTimer.note),
-                    React.createElement("div", { style: { display: "flex", gap: 8 } },
+                    React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
                         React.createElement("button", { onClick: stopTimer, style: { ...C.btnPrimary, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 } },
                             React.createElement("i", { className: "ti ti-player-stop", style: { fontSize: 14 } }),
                             " Stop & Log"),
+                        runningTimer.pausedAt
+                            ? React.createElement("button", { onClick: resumeTimer, style: { padding: "9px 16px", borderRadius: 4, cursor: "pointer", fontSize: 12.5, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: T.ink, border: `1px solid ${T.line}` } },
+                                React.createElement("i", { className: "ti ti-player-play", style: { fontSize: 14 } }),
+                                " Resume")
+                            : React.createElement("button", { onClick: pauseTimer, style: { padding: "9px 16px", borderRadius: 4, cursor: "pointer", fontSize: 12.5, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: T.ink, border: `1px solid ${T.line}` } },
+                                React.createElement("i", { className: "ti ti-player-pause", style: { fontSize: 14 } }),
+                                " Pause"),
                         React.createElement("button", { onClick: () => askConfirm({ title: "Discard timer", message: "This running timer will be discarded without logging any time.", confirmLabel: "Discard timer", onConfirm: cancelTimer }), style: { padding: "9px 16px", borderRadius: 4, cursor: "pointer", fontSize: 12.5, fontWeight: 600, background: "transparent", color: T.ink3, border: `1px solid ${T.line}` } }, "Discard")))
                 : React.createElement("div", { style: { border: T.cardBorder, borderRadius: 4, padding: "16px", background: T.panel, marginBottom: 16, boxShadow: T.cardShadow } },
                     React.createElement("div", { style: { display: "flex", gap: 5, marginBottom: 14 } },
