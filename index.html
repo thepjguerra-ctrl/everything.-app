@@ -3527,6 +3527,21 @@ function App() {
         pendingBulletSelectionRef.current = [newPos, newPos];
         setNoteEditDraft(d => ({ ...d, body: newBody }));
     }
+    // Runs a note's text back through the same Dump/Review & Sort parser used
+    // for a fresh brain dump (doOrganize → parseCaptureEntries), so an old
+    // note can retroactively become Ideas/Projects/Today items without
+    // retyping it anywhere. No new detection logic — this is the exact path
+    // "Organize My Day" and the Dump inbox already use. The note itself is
+    // left exactly as it was; sorting only stages review items; it doesn't
+    // delete or edit the note.
+    function sendNoteToSort(note) {
+        if (!note)
+            return;
+        const text = [note.title, note.body].filter(t => t && t.trim()).join("\n");
+        if (!text.trim())
+            return;
+        doOrganize(text);
+    }
     function deleteNoteFromModal(id) {
         askConfirm({ title: "Delete note", message: "This note and everything in it will be gone for good.", confirmLabel: "Delete note", onConfirm: () => {
                 setNotes(prev => prev.filter(n => n.id !== id));
@@ -5698,7 +5713,16 @@ function App() {
                                 React.createElement("input", {
                                     ref: noteAttachInputRef, type: "file", accept: ATTACHMENT_ACCEPT, style: { display: "none" },
                                     onChange: e => { const f = e.target.files[0]; if (f) attachFileToNote(f); e.target.value = ""; }
-                                })),
+                                }),
+                                // Runs this note through the same parser a fresh brain dump goes
+                                // through, staging it into the Review & Sort screen (Ideas/Projects/
+                                // Today) without touching the note itself.
+                                React.createElement("button", {
+                                    type: "button", onClick: () => sendNoteToSort(noteEditDraft), title: "Run this note through Review & Sort",
+                                    style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: isMobile ? 12.5 : 10.5, padding: isMobile ? "7px 12px" : "4px 9px", borderRadius: 2, cursor: "pointer", border: `1.5px solid ${T.lineSoft}`, background: "transparent", color: T.ink2, fontWeight: 600, ...(isMobile ? { minHeight: 36 } : {}) }
+                                },
+                                    React.createElement("i", { className: "ti ti-arrows-sort", style: { fontSize: 13 }, "aria-hidden": true }),
+                                    "Send to Sort")),
                             noteAttachError && React.createElement("div", { style: { fontSize: 11.5, color: "#c0392b", background: "#FFF0F0", border: "1px solid #f5c6c6", borderRadius: 4, padding: "7px 10px", marginBottom: 10, display: "flex", alignItems: "flex-start", gap: 6, lineHeight: 1.4 } },
                                 React.createElement("i", { className: "ti ti-alert-circle", style: { fontSize: 13, marginTop: 1, flexShrink: 0 }, "aria-hidden": true }),
                                 noteAttachError),
