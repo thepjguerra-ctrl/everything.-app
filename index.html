@@ -356,9 +356,9 @@ const PRE_IMPORT_SNAPSHOT_KEY = "everything-pre-import-snapshot";
 // anyone who never uses Undo.
 const PRE_IMPORT_SNAPSHOT_TS_KEY = "everything-pre-import-snapshot-ts";
 const PRE_IMPORT_SNAPSHOT_MAX_AGE_MS = 5 * 24 * 60 * 60 * 1000; // 5 days
-// Studio signature link in the sidebar footer.
-// TODO(release): replace with the real EVERYTHING. studio URL before shipping.
-const STUDIO_URL = "https://everything.studio";
+// Studio signature link shown in the desktop sidebar footer and the mobile
+// "More" sheet footer.
+const STUDIO_URL = "https://itseverythingperiod.com";
 // ── Startup quotes ────────────────────────────────────────────────────────────
 // Small inspirational line shown at the top of Today. One is chosen at random on
 // every load, so it changes on each refresh/startup. Each line includes
@@ -5824,7 +5824,12 @@ function App() {
                             React.createElement("i", { className: `ti ${n.icon}`, style: { fontSize: 18, width: 22, textAlign: "center", flexShrink: 0, color: on ? T.red : "#999999" }, "aria-hidden": true }),
                             React.createElement("span", { style: { flex: 1, fontWeight: on ? 700 : 500 } }, n.label),
                             n.badge > 0 && React.createElement("span", { style: { minWidth: 19, height: 19, borderRadius: 3, background: on ? T.red : "rgba(255,255,255,0.12)", color: "#fff", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, padding: "0 5px", flexShrink: 0 } }, n.badge));
-                    }))));
+                    })),
+                // Studio signature link — the desktop sidebar has one at the
+                // bottom already; mobile has no sidebar at all, so the "More"
+                // sheet is the one place every mobile user reaches that can
+                // carry the same footer link.
+                React.createElement("a", { href: STUDIO_URL, target: "_blank", rel: "noopener noreferrer", style: { display: "block", textAlign: "center", padding: "12px 0.5rem 4px", marginTop: 4, borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", textDecoration: "none" } }, "EVERYTHING. studio ↗")));
     }
     const sceneCfg = TIME_SCENES[bgScene] || TIME_SCENES.night;
     // Corner registration marks — tie the app frame to the poster scene
