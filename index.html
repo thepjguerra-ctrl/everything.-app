@@ -398,6 +398,10 @@ function normalizeTask(t) {
         priority: typeof t.priority === "string" ? t.priority : "medium",
         rolledDays: typeof t.rolledDays === "number" ? t.rolledDays : 0,
         rolledFrom: t.rolledFrom != null ? t.rolledFrom : null,
+        // Optional due date — same day-label format as calendar events
+        // (weekday word, "YYYY-MM-DD", etc.), pinned to an absolute date so a
+        // relative label like "Thursday" doesn't drift once that day passes.
+        due: typeof t.due === "string" && t.due ? pinDayLabel(t.due) : null,
     };
 }
 function normalizeCalEvent(ev) {
@@ -1382,7 +1386,7 @@ const SECS = [
     { key: "later", label: "Parked", icon: "ti-archive" },
 ];
 const empty = () => Object.fromEntries(SECS.map(s => [s.key, []]));
-const mk = (t, s, x = {}) => ({ id: uid(), title: t, section: s, done: false, notes: "", priority: "medium", rolledDays: 0, rolledFrom: null, ...x });
+const mk = (t, s, x = {}) => ({ id: uid(), title: t, section: s, done: false, notes: "", priority: "medium", rolledDays: 0, rolledFrom: null, due: null, ...x });
 const DEMO_TEXT = "text mom back, finish the essay, buy groceries, clean the apartment, plan the trip, what if I started running in the mornings";
 const INIT_ROLLING = [];
 function rewrite(raw, sec) {
@@ -2288,11 +2292,16 @@ function Checkbox({ done, onToggle }) {
 }
 function TaskRow({ task, onToggle, onEdit }) {
     const isMobile = useIsMobile();
+    // Overdue = has a due date, isn't done, and that date (or every date in a
+    // pinned range) is strictly in the past \u2014 same "past" definition used for
+    // calendar events (isPastEvent), just against `due` instead of `dayLabel`.
+    const overdue = !task.done && task.due && isPastEvent({ dayLabel: task.due });
     return React.createElement("div", { className: "ev-row", style: { display: "flex", alignItems: "center", gap: 9, padding: "7px 0", borderBottom: `1px dashed ${T.lineSoft}` } },
         React.createElement(Checkbox, { done: task.done, onToggle: () => onToggle(task.id) }),
         React.createElement("span", { style: { flex: 1, fontSize: 13, lineHeight: 1.4, color: task.done ? T.ink3 : T.ink, textDecoration: task.done ? "line-through" : "none", minWidth: 0 } },
             task.title,
             task.rolledFrom && !task.done && React.createElement("span", { style: { fontSize: 9.5, color: T.red, marginLeft: 5, fontWeight: 600 } }, "\u21A9 rolled"),
+            task.due && !task.done && React.createElement("span", { style: { fontSize: 9.5, color: overdue ? "#fff" : T.ink3, background: overdue ? T.red : T.panelAlt, padding: "1px 6px", borderRadius: 2, marginLeft: 5, fontWeight: 700, whiteSpace: "nowrap" } }, (overdue ? "Overdue: " : "Due ") + formatDateLabel(task.due)),
             task.notes && !task.done && React.createElement("div", { style: { fontSize: 11, color: T.ink3, marginTop: 2, lineHeight: 1.4 } }, task.notes)),
         !task.done && React.createElement("span", { style: { fontSize: 9, padding: "2px 6px", borderRadius: 2, flexShrink: 0, fontWeight: 700, ...priChip(task.priority) } }, task.priority),
         React.createElement("button", { onClick: () => onEdit(task), className: "ev-handle", style: C.iBtn(isMobile) },
@@ -2302,6 +2311,7 @@ function TaskRow({ task, onToggle, onEdit }) {
 function TaskModal({ task, onSave, onDelete, onClose }) {
     const isMobile = useIsMobile();
     const [title, setTitle] = useState(task.title), [section, setSection] = useState(task.section), [notes, setNotes] = useState(task.notes || ""), [priority, setPriority] = useState(task.priority || "medium");
+    const [due, setDue] = useState(task.due || "");
     const notesMic = useDictation(notes, setNotes);
     return React.createElement("div", { onClick: onClose, style: { position: "absolute", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 } },
         React.createElement("div", { onClick: e => e.stopPropagation(), style: { width: 360, background: T.panel, border: T.actionBorder, borderRadius: 6, padding: "1.4rem", boxShadow: "0 8px 24px rgba(0,0,0,0.16)" } },
@@ -2315,11 +2325,16 @@ function TaskModal({ task, onSave, onDelete, onClose }) {
             React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 14 } }, ["high", "medium", "low"].map(p => React.createElement("button", { key: p, onClick: () => setPriority(p), style: C.pill(priority === p, isMobile) }, p))),
             React.createElement("span", { style: C.lbl }, "Section"),
             React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 } }, SECS.map(s => React.createElement("button", { key: s.key, onClick: () => setSection(s.key), style: { ...C.pill(section === s.key, isMobile), fontSize: 10.5 } }, s.label))),
+            React.createElement("span", { style: C.lbl }, "Due (optional)"),
+            React.createElement("div", { style: { marginBottom: 4 } },
+                React.createElement("input", { value: due, onChange: e => setDue(e.target.value), placeholder: "e.g. Thursday, 2026-08-20", style: { width: "100%", fontSize: 13, padding: "6px 10px", background: T.panelAlt, border: `1.5px solid ${T.lineSoft}`, borderRadius: 3, color: T.ink, outline: "none", boxSizing: "border-box" } })),
+            due.trim() && formatDateLabel(pinDayLabel(due.trim())) !== due.trim() && React.createElement("div", { style: { fontSize: 10.5, color: T.ink3, marginBottom: 10, paddingLeft: 2 } }, formatDateLabel(pinDayLabel(due.trim()))),
+            (!due.trim() || formatDateLabel(pinDayLabel(due.trim())) === due.trim()) && React.createElement("div", { style: { marginBottom: 8 } }),
             React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 14 } },
                 React.createElement("textarea", { value: notes, onChange: e => setNotes(e.target.value), placeholder: "Note (optional)", rows: 2, style: { flex: 1, minWidth: 0, fontSize: 12, padding: "8px 10px", fontFamily: "inherit", background: T.panelAlt, border: `1.5px solid ${T.lineSoft}`, borderRadius: 3, color: T.ink2, resize: "none", outline: "none" } }),
                 notesMic.supported && React.createElement(MicBtn, { listening: notesMic.listening, onToggle: notesMic.toggle, small: true, style: { alignSelf: "flex-start" } })),
             React.createElement("div", { style: { display: "flex", gap: 8 } },
-                React.createElement("button", { onClick: () => onSave({ ...task, title, section, notes, priority }), style: C.btnPrimary }, "Save"),
+                React.createElement("button", { onClick: () => onSave({ ...task, title, section, notes, priority, due: due.trim() ? pinDayLabel(due.trim()) : null }), style: C.btnPrimary }, "Save"),
                 React.createElement("button", { onClick: () => onDelete(task.id), style: C.btnDanger },
                     React.createElement("i", { className: "ti ti-trash", style: { fontSize: 14 }, "aria-hidden": true })))));
 }
@@ -3229,8 +3244,8 @@ function App() {
                 case "today": {
                     const sec = secForLabel(label);
                     // Deadline items ("submit invoice by Friday") keep their day
-                    // as a due-date note instead of becoming calendar events.
-                    newSections[sec].push(mk(label, sec, item.calDay ? { notes: `Due ${formatDateLabel(pinDayLabel(item.calDay))}` } : {}));
+                    // as a real due date instead of becoming calendar events.
+                    newSections[sec].push(mk(label, sec, item.calDay ? { due: pinDayLabel(item.calDay) } : {}));
                     taskCount++;
                     break;
                 }
