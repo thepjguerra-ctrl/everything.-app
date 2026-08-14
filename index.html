@@ -581,6 +581,21 @@ function normalizeNote(raw) {
         updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now(),
     };
 }
+// When a note is saved with no title, Apple Notes fills the title in from the
+// first line of the body rather than leaving it blank. Mirror that: grab up
+// to the first line break or sentence-ending punctuation, whichever comes
+// first, so a single long run-on line still gets a sane, capped title.
+function firstSentenceFromBody(body) {
+    const trimmed = (body || "").trim();
+    if (!trimmed)
+        return "";
+    const m = trimmed.match(/^[^\n.!?]*[.!?]?/);
+    let s = (m ? m[0] : trimmed).trim();
+    s = s.replace(/^[•\-*]\s*/, ""); // drop a leading bullet marker
+    if (s.length > 80)
+        s = s.slice(0, 80).trim() + "…";
+    return s;
+}
 // Pre-check cap on the RAW file (before base64, which inflates size by ~33%).
 // This is a courtesy that avoids ever trying to encode something absurd — the
 // real safety net is the eager probe-write in attachFileToNote, which catches
@@ -3355,7 +3370,7 @@ function App() {
             return;
         const t = (draft.title || "").trim();
         setNotes(prev => prev.map(n => n.id === draft.id
-            ? { ...n, title: t || "Untitled", body: draft.body, area: draft.area, attachment: draft.attachment ?? null, updatedAt: Date.now() }
+            ? { ...n, title: t || firstSentenceFromBody(draft.body) || "Untitled", body: draft.body, area: draft.area, attachment: draft.attachment ?? null, updatedAt: Date.now() }
             : n));
     }
     // Synchronous localStorage patch for the open note draft. React's normal
@@ -3374,7 +3389,7 @@ function App() {
                 return;
             const t = (draft.title || "").trim();
             data.notes = data.notes.map(n => n.id === draft.id
-                ? { ...n, title: t || "Untitled", body: draft.body, area: draft.area, attachment: draft.attachment ?? null, updatedAt: Date.now() }
+                ? { ...n, title: t || firstSentenceFromBody(draft.body) || "Untitled", body: draft.body, area: draft.area, attachment: draft.attachment ?? null, updatedAt: Date.now() }
                 : n);
             localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         }
@@ -3396,7 +3411,7 @@ function App() {
             return;
         }
         setNotes(prev => prev.map(n => n.id === noteEditDraft.id
-            ? { ...n, title: t || "Untitled", body: noteEditDraft.body, area: noteEditDraft.area, attachment: noteEditDraft.attachment ?? null, updatedAt: Date.now() }
+            ? { ...n, title: t || firstSentenceFromBody(noteEditDraft.body) || "Untitled", body: noteEditDraft.body, area: noteEditDraft.area, attachment: noteEditDraft.attachment ?? null, updatedAt: Date.now() }
             : n));
     }
     function openNote(note) {
