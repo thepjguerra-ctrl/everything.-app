@@ -808,9 +808,12 @@ function migrateAppState(raw) {
         // modules: which optional nav items are on; absent keys reconcile to canonical defaults
         modules: normalizeModules(raw.modules),
         // bottomBarModule: which ONE optional module (see OPTIONAL_MODULE_KEYS) sits in
-        // the mobile bottom bar instead of the "More" sheet. "notes" is the default so
-        // existing saves keep the bar exactly as it always was — Notes on the bar.
-        bottomBarModule: MODULE_META.some(m => m.key === raw.bottomBarModule) ? raw.bottomBarModule : "notes",
+        // the mobile bottom bar instead of the "More" sheet. Notes moved out of this
+        // system entirely (it's a permanent bar tab now, not a promotable module — see
+        // MOBILE_NAV_CONFIG.bar), so a saved "notes" value here is stale but harmless:
+        // the OPTIONAL_MODULE_KEYS check in App just treats it as nothing promoted.
+        // "ideas" is the default for anyone with no saved preference at all.
+        bottomBarModule: MODULE_META.some(m => m.key === raw.bottomBarModule) ? raw.bottomBarModule : "ideas",
         // introDismissed: whether the first-run "start in Dump" card has been closed
         introDismissed: typeof raw.introDismissed === "boolean" ? raw.introDismissed : false,
         // onboardingSeen: whether the first-launch welcome walkthrough has been
@@ -2104,18 +2107,26 @@ function useIsMobile(breakpoint = MOBILE_BREAKPOINT) {
 }
 // Mobile nav split — the FIXED nav keys that always sit on the bottom bar vs.
 // always in the "More" sheet. Keys must match NAV's `key` values (built further
-// down in App from CORE_NAV_KEYS + the module toggles). The optional modules
-// (OPTIONAL_MODULE_KEYS below) are NOT listed here — they share one remaining
-// bar slot, chosen in Settings via `bottomBarModule` (see App's mobileBarItems).
+// down in App from CORE_NAV_KEYS + the module toggles). "notes" is fixed here
+// too, but — unlike today/dump/calendar — it's still an optional module for the
+// desktop sidebar (see MODULE_META), so App looks it up from the unfiltered
+// NAV_ALL rather than the module-gated NAV, specifically so it shows up on the
+// mobile bar even when someone has the Notes module toggled off. The rest of
+// the optional modules (OPTIONAL_MODULE_KEYS below) are NOT listed here — they
+// share one remaining bar slot, chosen in Settings via `bottomBarModule` (see
+// App's mobileBarItems).
 const MOBILE_NAV_CONFIG = {
-    bar: ["today", "dump", "calendar"],
+    bar: ["today", "dump", "calendar", "notes"],
     sheet: ["rolling", "done", "reset", "settings"],
 };
-// The optional modules, in the order they should fall back into "More"
-// when they aren't the one occupying the bottom-bar slot. Adding a new
-// optional module = add it to MODULE_META above and to this list; NAV,
-// Settings, and the mobile bar/sheet split all key off these two already.
-const OPTIONAL_MODULE_KEYS = ["notes", "ideas", "projects", "lists", "timeclock"];
+// The optional modules that still compete for the ONE promotable bottom-bar
+// slot, in the order they should fall back into "More" when they aren't the
+// one occupying it. Notes is deliberately NOT in this list any more — it's a
+// permanent bar tab (see MOBILE_NAV_CONFIG.bar above), not a promotable one —
+// but it stays in MODULE_META below since the desktop sidebar still treats it
+// as an optional module. Adding a new promotable module = add it to
+// MODULE_META above and to this list.
+const OPTIONAL_MODULE_KEYS = ["ideas", "projects", "lists", "timeclock"];
 // ── Shared styles ─────────────────────────────────────────────────────────────
 const C = {
     // Action card — solid border, soft shadow, slight offset for importance
@@ -2560,7 +2571,7 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
             "Data saves automatically after every change."),
         // ── Modules — toggle optional sidebar sections ───────────────────────────
         React.createElement("span", { style: C.lbl }, "Modules"),
-        React.createElement("div", { style: { fontSize: 12, color: T.ink3, marginBottom: 12, lineHeight: 1.5 } }, "Add or remove sections from the sidebar. Today, Dump, Calendar, and Settings are always shown. On mobile, one of these can also sit in the bottom bar instead of “More” — pick which."),
+        React.createElement("div", { style: { fontSize: 12, color: T.ink3, marginBottom: 12, lineHeight: 1.5 } }, "Add or remove sections from the sidebar. Today, Dump, Calendar, and Settings are always shown (Notes always sits in the phone bottom bar too, regardless of this toggle). On mobile, one of the rest can also sit in the bottom bar instead of “More” — pick which."),
         MODULE_META.map(m => {
             // Locked (currently just Time Clock, pre-unlock) gets a "Coming
             // Soon" pill instead of the normal On/Off switch. Tapping it opens
@@ -2593,7 +2604,11 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
                     React.createElement("button", { onClick: submitPin, disabled: pinValue.length !== 4, style: { padding: "6px 14px", borderRadius: 4, cursor: pinValue.length === 4 ? "pointer" : "default", fontSize: 11, fontWeight: 700, border: "none", background: pinValue.length === 4 ? T.ink : T.lineSoft, color: pinValue.length === 4 ? "#FFFFFF" : T.ink3 } }, "Unlock"),
                     React.createElement("button", { onClick: () => { setPinEntryOpen(false); setPinValue(""); setPinError(false); }, style: { padding: "6px 14px", borderRadius: 4, cursor: "pointer", fontSize: 11, fontWeight: 600, background: "transparent", color: T.ink2, border: `1px solid ${T.line}` } }, "Cancel")),
                 isLocked && pinEntryOpen && pinError && React.createElement("div", { style: { fontSize: 10.5, color: "#c0392b" } }, "Incorrect PIN."),
-                !isLocked && modules[m.key] && React.createElement("button", { onClick: () => onPickBottomBarModule(m.key), role: "switch", "aria-checked": bottomBarModule === m.key, style: { alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontWeight: 700, border: `1.5px solid ${bottomBarModule === m.key ? T.red : T.lineSoft}`, background: bottomBarModule === m.key ? "rgba(224,48,48,0.08)" : "transparent", color: bottomBarModule === m.key ? T.red : T.ink3, transition: "all .12s" } },
+                // Notes is deliberately excluded here: it's a permanent mobile bar tab
+                // now (see MOBILE_NAV_CONFIG.bar), not one of the modules competing for
+                // the one promotable slot, so it no longer gets a "Show in bottom bar"
+                // choice — that's OPTIONAL_MODULE_KEYS' job to gate, not just "on".
+                !isLocked && modules[m.key] && OPTIONAL_MODULE_KEYS.includes(m.key) && React.createElement("button", { onClick: () => onPickBottomBarModule(m.key), role: "switch", "aria-checked": bottomBarModule === m.key, style: { alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontWeight: 700, border: `1.5px solid ${bottomBarModule === m.key ? T.red : T.lineSoft}`, background: bottomBarModule === m.key ? "rgba(224,48,48,0.08)" : "transparent", color: bottomBarModule === m.key ? T.red : T.ink3, transition: "all .12s" } },
                     React.createElement("i", { className: `ti ${bottomBarModule === m.key ? "ti-square-check" : "ti-square"}`, style: { fontSize: 11 }, "aria-hidden": true }),
                     bottomBarModule === m.key ? "In bottom bar" : "Show in bottom bar"));
         })));
@@ -2877,7 +2892,7 @@ function App() {
     // fresh read on mount is the correct source of truth, same reasoning as
     // SettingsView's canUndo.
     const [timeclockUnlocked, setTimeclockUnlocked] = useState(() => hasTimeclockUnlock());
-    const [bottomBarModule, setBottomBarModule] = useState(() => S.bottomBarModule ?? "notes");
+    const [bottomBarModule, setBottomBarModule] = useState(() => S.bottomBarModule ?? "ideas");
     const [introDismissed, setIntroDismissed] = useState(() => S.introDismissed ?? false);
     // onboardingSeen persists across reloads (stops the walkthrough auto-opening
     // again); onboardingOpen is transient UI state that actually controls the
@@ -5851,7 +5866,13 @@ function App() {
     // lives outside that — see TIMECLOCK_UNLOCK_KEY — specifically so an import
     // can't be used to skip it).
     const effectiveModules = { ...modules, timeclock: modules.timeclock && timeclockUnlocked };
-    const NAV = [
+    // NAV_ALL is every nav entry's label/icon/badge, unfiltered. NAV is the
+    // module-gated view everything normally reads from (desktop sidebar,
+    // mobileSheetItems). mobileBarItems deliberately reads "notes" from
+    // NAV_ALL instead — see MOBILE_NAV_CONFIG's comment — so the phone bottom
+    // bar shows Notes even when the Notes module toggle is off, without
+    // changing what the desktop sidebar or Settings toggle do.
+    const NAV_ALL = [
         { key: "today", icon: "ti-layout-dashboard", label: "Today" },
         { key: "dump", icon: "ti-brain", label: "Dump" },
         // Badge counts only today + next 7 days so past events stop inflating it
@@ -5865,16 +5886,17 @@ function App() {
         { key: "lists", icon: "ti-list-check", label: "Lists", badge: lists.length || undefined },
         { key: "timeclock", icon: "ti-clock-play", label: "Time Clock" },
         { key: "settings", icon: "ti-settings", label: "Settings" },
-    ].filter(n => CORE_NAV_KEYS.includes(n.key) || effectiveModules[n.key]);
-    // Mobile bottom bar + "More" sheet both just pull from NAV by key, via
-    // MOBILE_NAV_CONFIG — so they automatically inherit NAV's labels, icons,
-    // badges, and the same module-visibility filter above. Reordering the
-    // fixed bar/sheet keys later only ever means editing that config object.
-    // The optional modules share one bar slot: whichever bottomBarModule names
-    // (if that module is actually on) takes it; the other optional modules —
-    // and this one too, if it's off or unset — fall into the sheet like before.
-    const barModuleKey = bottomBarModule && effectiveModules[bottomBarModule] ? bottomBarModule : null;
-    const mobileBarItems = [...MOBILE_NAV_CONFIG.bar, ...(barModuleKey ? [barModuleKey] : [])].map(key => NAV.find(n => n.key === key)).filter(Boolean);
+    ];
+    const NAV = NAV_ALL.filter(n => CORE_NAV_KEYS.includes(n.key) || effectiveModules[n.key]);
+    // Mobile bottom bar + "More" sheet both just pull from NAV(_ALL) by key,
+    // via MOBILE_NAV_CONFIG — so they automatically inherit NAV's labels,
+    // icons, and badges. Reordering the fixed bar/sheet keys later only ever
+    // means editing that config object.
+    // The remaining optional modules share one bar slot: whichever
+    // bottomBarModule names (if it's still a valid promotable option AND
+    // actually on) takes it; the rest fall into the sheet like before.
+    const barModuleKey = bottomBarModule && OPTIONAL_MODULE_KEYS.includes(bottomBarModule) && effectiveModules[bottomBarModule] ? bottomBarModule : null;
+    const mobileBarItems = [...MOBILE_NAV_CONFIG.bar, ...(barModuleKey ? [barModuleKey] : [])].map(key => NAV_ALL.find(n => n.key === key)).filter(Boolean);
     const mobileSheetItems = [...OPTIONAL_MODULE_KEYS.filter(k => k !== barModuleKey), ...MOBILE_NAV_CONFIG.sheet].map(key => NAV.find(n => n.key === key)).filter(Boolean);
     const mobileActiveInSheet = mobileSheetItems.some(n => n.key === tab);
     // Mobile bottom tab bar — bar items + a "More" tab that toggles the sheet.
