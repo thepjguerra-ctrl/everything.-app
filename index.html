@@ -2155,6 +2155,27 @@ function useIsMobile(breakpoint = MOBILE_BREAKPOINT) {
     }, [breakpoint]);
     return isMobile;
 }
+// Detects the on-screen keyboard opening from the visual viewport shrinking
+// relative to the layout viewport — the same signal liftNoteFieldIntoView
+// already uses to keep a focused Notes field visible, generalized here so
+// ANY focused text field (Notes, Ideas capture, Time Clock's note field,
+// Calendar's event title, Dump) can hide the mobile bottom tab bar while
+// typing instead of it sitting pinned above the keyboard, squeezing the
+// field into a cramped middle strip (round 10, item 5). One hook, read once
+// in App, rather than duplicating a check per field.
+function useKeyboardOpen() {
+    const [open, setOpen] = useState(false);
+    useEffect(() => {
+        if (typeof window === "undefined" || !window.visualViewport)
+            return;
+        const vv = window.visualViewport;
+        function check() { setOpen(vv.height < window.innerHeight - 150); }
+        check();
+        vv.addEventListener("resize", check);
+        return () => vv.removeEventListener("resize", check);
+    }, []);
+    return open;
+}
 // Mobile nav split — the FIXED nav keys that always sit on the bottom bar vs.
 // always in the "More" sheet. Keys must match NAV's `key` values (built further
 // down in App from CORE_NAV_KEYS + the module toggles). "notes" is fixed here
@@ -2212,8 +2233,11 @@ const C = {
     btnGhost: { padding: "9px 13px", borderRadius: 4, cursor: "pointer", background: "transparent", border: T.cardBorder, color: T.ink3, fontSize: 12 },
 };
 function priChip(p) {
+    // "high" is white fill + red outline + red text (round 10 — the
+    // red-to-outline mockup's badge case), not a solid red fill. Medium/low
+    // are unaffected.
     if (p === "high")
-        return { color: "#FFFFFF", background: T.red, border: `1px solid ${T.red}`, fontWeight: 700 };
+        return { color: T.red, background: "#FFFFFF", border: `1.5px solid ${T.red}`, fontWeight: 700 };
     if (p === "medium")
         return { color: T.ink, background: "transparent", border: `1px solid ${T.lineSoft}` };
     return { color: T.ink3, background: "transparent", border: `1px solid ${T.lineSoft}` };
@@ -3084,6 +3108,7 @@ function App() {
     }
     // ── Mobile pass — single source of truth for "are we phone-width" ───────────
     const isMobile = useIsMobile();
+    const keyboardOpen = useKeyboardOpen(); // round 10, item 5 — hides the bottom tab bar while any field has focus and the keyboard is up
     const [mobileMoreOpen, setMobileMoreOpen] = useState(false); // "More" bottom sheet open/closed
     useEffect(() => { if (!isMobile) setMobileMoreOpen(false); }, [isMobile]); // don't leave it stuck open if the window grows past the breakpoint
     // ── Background scene (visual only — own localStorage key, NOT part of the
@@ -4168,14 +4193,14 @@ function App() {
                                 p.label);
                         })),
                     organized && (React.createElement(React.Fragment, null,
-                        React.createElement("div", { style: { width: 1, height: 18, background: T.lineSoft } }),
+                        React.createElement("div", { style: { marginLeft: "auto", width: 1, height: 18, background: T.lineSoft } }),
                         rolling.length > 0 && React.createElement("span", { style: { fontSize: 11, color: T.ink3 } },
                             React.createElement("span", { style: { color: T.red, fontWeight: 600 } }, rolling.length),
                             " carried"),
                         doneTasks.length > 0 && (React.createElement("button", { onClick: clearCompleted, style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, color: T.ink2, background: "transparent", border: `1.5px solid ${T.lineSoft}`, borderRadius: 3, padding: "3px 9px", cursor: "pointer", fontWeight: 600 } },
                             React.createElement("i", { className: "ti ti-circle-check", style: { fontSize: 10 }, "aria-hidden": true }),
                             "Clear done")),
-                        React.createElement("button", { onClick: () => setCustomize(c => !c), title: customize ? "Exit customize mode" : "Rearrange, resize, hide, or restore cards", style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", justifyContent: "center", color: customize ? "#FFFFFF" : T.ink2, background: customize ? T.ink : "transparent", border: `1.5px solid ${customize ? T.ink : T.lineSoft}`, borderRadius: 3, padding: "4px 8px", cursor: "pointer", flexShrink: 0 } },
+                        React.createElement("button", { onClick: () => setCustomize(c => !c), title: customize ? "Exit customize mode" : "Rearrange, resize, hide, or restore cards", style: { display: "inline-flex", alignItems: "center", justifyContent: "center", color: customize ? "#FFFFFF" : T.ink2, background: customize ? T.ink : "transparent", border: `1.5px solid ${customize ? T.ink : T.lineSoft}`, borderRadius: 3, padding: "4px 8px", cursor: "pointer", flexShrink: 0 } },
                             React.createElement("i", { className: `ti ${customize ? "ti-check" : "ti-layout-grid"}`, style: { fontSize: 12 }, "aria-hidden": true })))))),
             !organized && (React.createElement("div", { style: { marginBottom: 14, background: T.panel, border: T.cardBorder, borderRadius: 4, boxShadow: T.actionShadow, overflow: "hidden" } },
                 React.createElement("div", { style: { padding: "14px 16px" } },
@@ -5028,7 +5053,7 @@ function App() {
 
         // ── Add Event form ─────────────────────────────────────────────────────
         function renderAddForm() {
-            return React.createElement("div",{style:{border:T.cardBorder,borderRadius:4,background:T.panel,boxShadow:T.cardShadow,overflow:"hidden",marginTop:18}},
+            return React.createElement("div",{style:{border:T.cardBorder,borderRadius:4,background:T.panel,boxShadow:T.cardShadow,overflow:"hidden",marginTop:18,marginBottom:18}},
                 React.createElement("div",{style:{padding:"8px 14px 7px",borderBottom:`1px solid ${T.lineSoft}`,display:"flex",alignItems:"center",gap:8}},
                     React.createElement("i",{className:"ti ti-calendar-plus",style:{fontSize:13,color:T.red}}),
                     React.createElement("span",{style:{fontFamily:FONT_CONDENSED,fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.1em",color:T.ink}},"Add Event"),
@@ -5127,10 +5152,9 @@ function App() {
             // has nowhere to sit beside the day agenda without crushing it, so it
             // stacks below instead — same pattern as Today's widgets, Notes, and
             // the Projects list/rail.
-            // Today/day view: Add Event moves above the fold, right under the day
-            // strip, since it was getting missed at the bottom (item 3, round 10).
-            // Week/month keep it at the bottom, unchanged.
-            calMode==="day" && renderAddForm(),
+            // Add Event sits above the fold in all three modes (round 10, items
+            // 3 & 4) — it used to live at the bottom in Week/Month, easy to miss.
+            renderAddForm(),
             React.createElement("div",{style:{display:"flex",gap:16,alignItems:"flex-start",flexDirection:isMobile?"column":"row"}},
                 React.createElement("div",{style:{flex:1,minWidth:0,width:isMobile?"100%":"auto"}},
                     calMode==="day"   && renderDayView(),
@@ -5139,8 +5163,7 @@ function App() {
                     renderUnscheduled()
                 ),
                 calMode!=="month" && renderRightRail()
-            ),
-            calMode!=="day" && renderAddForm()
+            )
         );
     };
     // ── Projects helpers ──────────────────────────────────────────────────────
@@ -6532,7 +6555,7 @@ function App() {
             // desktop-only, same reasoning as the corner marks: there's no
             // "frame" to sit under once the shell goes full-bleed on mobile.
             !isMobile && React.createElement("div", { "aria-hidden": true, style: { position: "absolute", top: "100%", right: 2, marginTop: 9, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.18em", textTransform: "uppercase", color: sceneCfg.caption, transition: "color 1.2s ease", whiteSpace: "nowrap" } }, `EVERYTHING. — ${sceneCfg.label} Desk`)),
-        isMobile && renderMobileBottomBar(),
+        isMobile && !keyboardOpen && renderMobileBottomBar(),
         isMobile && renderMobileMoreSheet()));
 }
 // ── Startup error boundary ──────────────────────────────────────────────────
