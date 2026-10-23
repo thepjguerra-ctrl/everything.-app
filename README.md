@@ -1,6 +1,6 @@
 # EVERYTHING.
 
-A place to dump everything on your mind and let it sort itself into a day you can actually work from. Type or paste a mess of tasks, and it splits them into sections, calendar events, and projects for you.
+A place to keep your day, your thoughts, and your projects in one spot. Plan Today in cards, keep notes and ideas under Thoughts, and give each project its own files, folders, and links.
 
 ## Opening it
 
@@ -8,7 +8,7 @@ Double-click `index.html`. It opens in your browser — no install. The first op
 
 ## Your data
 
-Everything you enter lives only in this browser, on this device. It is never uploaded or sent anywhere, which also means it won't follow you to another browser or computer. Clearing your browser data wipes it. Export a backup regularly from Settings → Your Data.
+Everything you enter lives only in this browser, on this device. It is never uploaded or sent anywhere, which also means it won't follow you to another browser or computer. Clearing your browser data wipes it. Back up regularly from Settings → Your Data — Today shows a reminder if a week goes by without one. "Back up everything" includes project files; "Data only" is the small version.
 
 ## Making it yours
 
@@ -22,7 +22,7 @@ Open `index.html` in any text editor and search for these:
 
 `const EVERYTHING_QUOTES` — the line that appears at the top of Today, picked at random each time you open the app. Add your own, remove the ones you don't like.
 
-`function secForLabel` — the rules that decide which section a dumped item lands in, based on words like "text," "buy," or "pay." Adjust the word lists to match how you actually talk.
+`const MODULE_META` — the optional sections (Projects, Lists, Time Clock) people can switch on in Settings.
 
 ## What's in the folder
 

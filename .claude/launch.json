@@ -4,7 +4,7 @@
     {
       "name": "everything-static",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["/Users/paulguerra/Desktop/Projects/EVERYTHING./EVERYTHING._App/.claude/serve.py"],
+      "runtimeArgs": ["/Users/paulguerra/Desktop/Projects/EVERYTHING/EVERYTHING._App/.claude/serve.py"],
       "port": 8117
     }
   ]
