@@ -1711,6 +1711,469 @@ function syncUidCounter(state) {
     if (allIds.length)
         _id = Math.max(_id, ...allIds);
 }
+// ── Optional sync (off unless you set it up in Settings → Sync) ──────────────
+// Keeps this browser's data in step with ONE copy held in your own Supabase
+// project, so a phone and a laptop share the same tasks, notes and projects.
+// Nothing in this section runs, and no request leaves the browser, until
+// someone pastes their project's address and public key into Settings and signs
+// in. SYNC-SETUP.md (next to this file) walks through creating the project.
+//
+// HOW A SYNC ROUND DECIDES WHAT TO DO
+// The cloud row carries a revision number (`rev`) that goes up by one on every
+// push. This device remembers the rev it last saw (`lastRev`) and a fingerprint
+// of its data at that moment (`lastHash`), so it can tell "has the cloud moved
+// since I last looked?" apart from "have I changed anything since then?":
+//   cloud same,  nothing new here → nothing to do
+//   cloud same,  changed here     → push this copy
+//   cloud moved, nothing new here → take the cloud copy as it is, so edits and
+//                                   deletes made on the other device arrive
+//   cloud moved, changed here     → both sides did work: mergeAppState (the
+//                                   same add-only merge Import uses), then push
+// The merge is kept for the both-changed case only. It never loses anything,
+// but run on every round it would bring deleted items back and turn every edit
+// into a duplicate. Pushes are compare-and-set on rev (push_state in
+// SYNC-SETUP.md), so two devices pushing at once can't overwrite each other:
+// the slower one is told it lost the race and goes round again.
+//
+// Before this device's data is replaced or merged, the current copy is saved
+// to the file store (IndexedDB has far more room than localStorage), and
+// Settings → Sync can put it back.
+const SYNC_KEY = "everything-sync"; // this device's sync settings + sign-in — never part of STORAGE_KEY
+const SYNC_SNAPSHOT_KEY = "__pre-sync-snapshot"; // file-store entry: this device's data from just before the last sync change
+const SYNC_BUCKET = "project-files";
+// Bump APP_BUILD whenever saved data gains a field. migrateAppState drops
+// fields it doesn't know, so an older copy of this code (an offline-cached one,
+// say) would load the cloud data, lose the new field, and push the stripped
+// copy to every device. Each push is stamped with the build that wrote it, and
+// a device whose build is older refuses to sync and asks for a reload instead.
+const APP_BUILD = 12;
+// Layout, not content: each device keeps its own.
+const SYNC_DEVICE_ONLY_KEYS = ["widgets", "activePreset", "bottomBarModule", "appVersion"];
+const SYNC_SAFE_FILE_KEY = /^[A-Za-z0-9_-]{1,120}$/;
+function readSyncConfig() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(SYNC_KEY) || "null");
+        return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    }
+    catch (e) {
+        return {};
+    }
+}
+function writeSyncConfig(patch) {
+    const next = { ...readSyncConfig(), ...patch };
+    try {
+        localStorage.setItem(SYNC_KEY, JSON.stringify(next));
+    }
+    catch (e) {
+        console.warn("[everything] Could not save sync settings:", e);
+    }
+    return next;
+}
+const syncIsOn = () => { const c = readSyncConfig(); return !!(c.url && c.key && c.session); };
+// The keys Supabase hands out come in a public flavour (safe in a browser) and
+// a secret one that bypasses every access rule. Refuse the secret one outright.
+function syncKeyProblem(key) {
+    const k = (key || "").trim();
+    if (!k)
+        return "Paste the project's public key.";
+    if (/^sb_secret_/i.test(k))
+        return "That's the project's SECRET key. Never put it in the app — use the publishable / anon key instead.";
+    const parts = k.split(".");
+    if (parts.length === 3) {
+        try {
+            const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+            if (payload && payload.role === "service_role")
+                return "That's the project's service_role key, which bypasses every access rule. Never put it in the app — use the anon key instead.";
+        }
+        catch (e) { /* not a JWT we can read — let Supabase judge it */ }
+    }
+    return null;
+}
+// cyrb53 — a fast 53-bit string hash. Only ever compared with this device's own
+// earlier hashes, to answer "has anything changed since the last sync?".
+function syncHashString(str) {
+    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+    for (let i = 0; i < str.length; i++) {
+        const ch = str.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 2654435761);
+        h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+function syncContent(state) {
+    const copy = { ...(state || {}) };
+    SYNC_DEVICE_ONLY_KEYS.forEach(k => { delete copy[k]; });
+    return copy;
+}
+const syncHash = state => syncHashString(stableStringify(syncContent(state)));
+function syncHasContent(state) {
+    if (!state || typeof state !== "object")
+        return false;
+    const plan = state.plan && typeof state.plan === "object" ? state.plan : {};
+    if (Object.values(plan).some(a => Array.isArray(a) && a.length))
+        return true;
+    return ["projects", "notes", "ideas", "lists", "calendarEvents", "timeEntries", "doneLog", "completedToday"]
+        .some(k => Array.isArray(state[k]) && state[k].length);
+}
+// ── Talking to Supabase (plain fetch — no client library to load) ──
+// Every step of a round has a time limit, so a request that never answers
+// (flaky phone signal) or a file store that never opens (Safari can stall
+// IndexedDB) ends the round with an error instead of "Syncing…" forever. A
+// round that times out has changed nothing; the next one starts over.
+function syncWithTimeout(promise, ms, message) {
+    let timer;
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); }),
+    ]).finally(() => clearTimeout(timer));
+}
+async function sbFetch(cfg, path, opts = {}) {
+    const headers = { apikey: cfg.key, ...(opts.headers || {}) };
+    if (opts.auth !== false && cfg.session && cfg.session.access_token)
+        headers.Authorization = "Bearer " + cfg.session.access_token;
+    if (opts.json !== undefined)
+        headers["Content-Type"] = "application/json";
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const ms = opts.timeoutMs || 30000; // file transfers pass a longer limit
+    const timer = setTimeout(() => { if (ctrl) ctrl.abort(); }, ms);
+    try {
+        return await fetch(cfg.url.replace(/\/+$/, "") + path, {
+            method: opts.method || "GET",
+            headers,
+            body: opts.json !== undefined ? JSON.stringify(opts.json) : opts.body,
+            signal: ctrl ? ctrl.signal : undefined,
+        });
+    }
+    catch (e) {
+        if (e && e.name === "AbortError")
+            throw new Error(`Your sync project didn't answer within ${Math.round(ms / 1000)} seconds. Nothing was changed; it'll try again.`);
+        throw e;
+    }
+    finally {
+        clearTimeout(timer);
+    }
+}
+async function sbError(res, fallback) {
+    let msg = "";
+    try {
+        const body = await res.json();
+        msg = body.msg || body.message || body.error_description || body.error || "";
+    }
+    catch (e) { /* body wasn't JSON */ }
+    return new Error((fallback || "Sync failed") + ` (${res.status}${msg ? ": " + msg : ""})`);
+}
+function sessionFromAuth(body) {
+    if (!body || !body.access_token || !body.refresh_token)
+        return null;
+    return {
+        access_token: body.access_token,
+        refresh_token: body.refresh_token,
+        expires_at: body.expires_at || Math.floor(Date.now() / 1000) + (body.expires_in || 3600),
+        user_id: body.user && body.user.id,
+        email: body.user && body.user.email,
+    };
+}
+// Email + password for the account created in the Supabase dashboard
+// (Authentication → Users). The password goes to Supabase only and is never
+// stored here; what's kept is the session Supabase hands back.
+async function syncSignIn(email, password) {
+    const cfg = readSyncConfig();
+    const res = await sbFetch(cfg, "/auth/v1/token?grant_type=password", { method: "POST", auth: false, json: { email: email.trim(), password } });
+    if (!res.ok)
+        throw await sbError(res, "Couldn't sign in");
+    writeSyncConfig({ email: email.trim() });
+    const session = sessionFromAuth(await res.json());
+    if (!session || !session.user_id)
+        throw new Error("Signed in, but Supabase didn't return a session. Try again.");
+    // A fresh sign-in starts from "never synced": the first round merges what's
+    // here with what's in the cloud, exactly like importing a backup.
+    writeSyncConfig({ session, lastRev: null, lastHash: null, uploaded: [] });
+    setSyncStatus({ state: "idle" });
+}
+// Refreshes the sign-in a minute before it runs out. Returns the config to use,
+// or null if the refresh token was refused (signed out on the server).
+async function syncFreshConfig() {
+    let cfg = readSyncConfig();
+    if (!cfg.url || !cfg.key || !cfg.session)
+        return null;
+    if ((cfg.session.expires_at || 0) * 1000 > Date.now() + 60000)
+        return cfg;
+    const res = await sbFetch(cfg, "/auth/v1/token?grant_type=refresh_token", { method: "POST", auth: false, json: { refresh_token: cfg.session.refresh_token } });
+    if (res.status === 400 || res.status === 401) {
+        writeSyncConfig({ session: null });
+        setSyncStatus({ state: "off", text: "You were signed out of sync. Sign in again to carry on — everything here is still saved." });
+        return null;
+    }
+    if (!res.ok)
+        throw await sbError(res, "Couldn't refresh the sync sign-in");
+    const session = sessionFromAuth(await res.json());
+    if (!session)
+        throw new Error("Couldn't refresh the sync sign-in.");
+    return writeSyncConfig({ session: { ...cfg.session, ...session, user_id: session.user_id || cfg.session.user_id } });
+}
+async function syncSignOut() {
+    const cfg = readSyncConfig();
+    if (cfg.session) {
+        try { await sbFetch(cfg, "/auth/v1/logout", { method: "POST" }); }
+        catch (e) { /* offline — the local sign-out below is what matters */ }
+    }
+    writeSyncConfig({ session: null, lastRev: null, lastHash: null, uploaded: [] });
+    setSyncStatus({ state: "off" });
+}
+// ── Status, shared with the Settings panel ──
+let _syncStatus = { state: "off" }; // off | idle | syncing | error | stale
+const _syncListeners = new Set();
+function setSyncStatus(s) {
+    _syncStatus = s;
+    _syncListeners.forEach(fn => { try { fn(s); } catch (e) { /* a listener's problem, not sync's */ } });
+}
+function useSyncStatus() {
+    const [s, setS] = useState(_syncStatus);
+    useEffect(() => { _syncListeners.add(setS); return () => { _syncListeners.delete(setS); }; }, []);
+    return s;
+}
+// App registers how to put a synced state on screen (its useState setters).
+let _applySyncedState = null;
+// ── Scheduling: one round at a time; anything asked for mid-round runs after ──
+let _syncTimer = null;
+let _syncRunning = null;
+let _syncAgain = false;
+function requestSync(delayMs = 0) {
+    if (!syncIsOn() || _syncStatus.state === "stale")
+        return;
+    clearTimeout(_syncTimer);
+    _syncTimer = setTimeout(() => { _syncTimer = null; runSync(); }, delayMs);
+}
+function runSync() {
+    if (_syncRunning) {
+        _syncAgain = true;
+        return _syncRunning;
+    }
+    _syncRunning = (async () => {
+        setSyncStatus({ state: "syncing" });
+        try {
+            const outcome = await runSyncRound();
+            if (outcome === "ok") // stale / signed-out / empty leave their own message up
+                setSyncStatus({ state: "idle" });
+        }
+        catch (e) {
+            console.warn("[everything] Sync round failed:", e);
+            const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+            setSyncStatus({ state: "error", text: offline ? "Offline — changes are saved here and will sync when you're back online." : (e && e.message) || "Sync failed. Your data here is safe; it'll try again." });
+        }
+        finally {
+            _syncRunning = null;
+            if (_syncAgain) {
+                _syncAgain = false;
+                requestSync(0);
+            }
+        }
+    })();
+    return _syncRunning;
+}
+// Takes the cloud copy for this device, keeping this device's own layout.
+function syncTakeCloud(local, cloud) {
+    const keep = {};
+    ["widgets", "activePreset", "bottomBarModule"].forEach(k => { if (local && k in local) keep[k] = local[k]; });
+    return migrateAppState({ ...cloud, ...keep });
+}
+// Both sides changed: the import merge, set up exactly the way importAppData
+// sets it up (Work folders unioned before either side is normalised).
+function syncMerge(local, cloud) {
+    const folders = mergeWorkFolders(local.workFolders, cloud.workFolders);
+    const localState = migrateAppState({ ...local, workFolders: folders });
+    const incoming = migrateAppState({ ...cloud, workFolders: folders });
+    return mergeAppState(localState, incoming).merged;
+}
+// The two answers to "your sync copy is empty". Emptying applies that one empty
+// revision here (a later empty one asks again); keeping marks this device as
+// changed, so the next round merges its data into the empty copy and uploads it.
+function syncResolveEmpty(emptyHere, rev) {
+    writeSyncConfig(emptyHere ? { acceptEmptyRev: rev } : { lastHash: null });
+    setSyncStatus({ state: "idle" });
+    return runSync();
+}
+async function saveSyncSnapshot(raw) {
+    await putFileBlob(SYNC_SNAPSHOT_KEY, new Blob([raw || "{}"], { type: "application/json" }));
+}
+async function readSyncSnapshot() {
+    try {
+        const b = await getFileBlob(SYNC_SNAPSHOT_KEY);
+        return b ? await b.text() : null;
+    }
+    catch (e) {
+        return null;
+    }
+}
+// Puts back this device's data from just before the last sync change. The
+// restored copy then counts as "changed here", so the next round pushes it
+// (or merges it, if the cloud has moved on meanwhile).
+async function undoLastSyncChange() {
+    const snap = await readSyncSnapshot();
+    if (!snap)
+        return false;
+    try {
+        if (!looksLikeBackup(JSON.parse(snap)))
+            return false;
+        localStorage.setItem(STORAGE_KEY, snap);
+    }
+    catch (e) {
+        console.warn("[everything] Could not restore the pre-sync copy:", e);
+        return false;
+    }
+    await deleteFileBlob(SYNC_SNAPSHOT_KEY).catch(() => { });
+    return true;
+}
+async function runSyncRound() {
+    let cfg = await syncFreshConfig();
+    if (!cfg)
+        return "signed-out";
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const localRaw = localStorage.getItem(STORAGE_KEY);
+        const local = localRaw ? JSON.parse(localRaw) : {};
+        const localHash = syncHash(local);
+        // Cheap check first: rev + build only. The data itself (which can be a
+        // few MB with attachments) is fetched only when the cloud has moved.
+        const head = await sbFetch(cfg, "/rest/v1/app_state?select=rev,build");
+        if (head.status === 401 && attempt === 0) {
+            // Sign-in rejected before its stated expiry — refresh it once and retry.
+            writeSyncConfig({ session: { ...cfg.session, expires_at: 0 } });
+            cfg = await syncFreshConfig();
+            if (!cfg)
+                return "signed-out";
+            continue;
+        }
+        if (!head.ok)
+            throw await sbError(head, "Couldn't reach your sync project");
+        const headRows = await head.json();
+        let row = Array.isArray(headRows) && headRows[0] ? headRows[0] : null;
+        if (row && (Number(row.build) || 0) > APP_BUILD) {
+            setSyncStatus({ state: "stale", text: "Your other device is on a newer version of the app. Reload this page to update before syncing — nothing here has been changed." });
+            return "stale";
+        }
+        const firstTime = cfg.lastRev == null;
+        const changedHere = firstTime ? syncHasContent(local) : localHash !== cfg.lastHash;
+        const cloudMoved = !!row && row.rev !== cfg.lastRev;
+        let next = null;
+        if (cloudMoved) {
+            const full = await sbFetch(cfg, "/rest/v1/app_state?select=rev,build,data");
+            if (!full.ok)
+                throw await sbError(full, "Couldn't download your synced data");
+            const fullRows = await full.json();
+            row = Array.isArray(fullRows) && fullRows[0] ? fullRows[0] : null;
+            if (!row)
+                continue; // the row vanished between the two reads — start the round over
+            // Same gate as Import: anything that isn't recognisably this app's data
+            // is refused before it can touch what's saved here.
+            if (typeof row.rev !== "number" || !looksLikeBackup(row.data))
+                throw new Error("The copy in your sync project doesn't look like Everything. data, so it wasn't used. Nothing here was changed.");
+            if ((Number(row.build) || 0) > APP_BUILD) {
+                setSyncStatus({ state: "stale", text: "Your other device is on a newer version of the app. Reload this page to update before syncing — nothing here has been changed." });
+                return "stale";
+            }
+            next = changedHere ? syncMerge(local, row.data) : syncTakeCloud(local, row.data);
+            // An empty cloud copy never empties a device that has data without
+            // asking. It's what deleting the last item on another device looks
+            // like, but also what a device whose saved data got wiped would push,
+            // so Settings → Sync asks which it was (see syncResolveEmpty).
+            if (!changedHere && !syncHasContent(next) && syncHasContent(local) && cfg.acceptEmptyRev !== row.rev) {
+                setSyncStatus({ state: "empty", rev: row.rev, text: "Your sync copy is now empty: everything was deleted or cleared on another device. This device still has its data, and nothing here has changed yet." });
+                return "empty";
+            }
+            // The rollback copy goes in BEFORE anything is overwritten. If it
+            // can't be written, nothing is applied.
+            if (localStorage.getItem(STORAGE_KEY) !== localRaw)
+                continue; // edited while we were downloading — redo with the newer copy
+            await syncWithTimeout(saveSyncSnapshot(localRaw), 15000, "Couldn't save the rollback copy in this browser's file storage, so nothing was applied. Closing other tabs of this app usually fixes it.");
+            if (localStorage.getItem(STORAGE_KEY) !== localRaw)
+                continue;
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...next, appVersion: APP_VERSION }));
+            if (_applySyncedState)
+                _applySyncedState(next);
+            cfg = writeSyncConfig({ lastRev: row.rev, lastHash: syncHash(next), lastSyncedAt: Date.now() });
+            if (!changedHere)
+                break;
+        }
+        if (changedHere || (!row && syncHasContent(local))) {
+            const data = next || local;
+            const res = await sbFetch(cfg, "/rest/v1/rpc/push_state", { method: "POST", json: { expected_rev: row ? row.rev : 0, new_data: syncContent(data), new_build: APP_BUILD } });
+            if (!res.ok)
+                throw await sbError(res, "Couldn't upload your changes");
+            const newRev = await res.json();
+            if (typeof newRev !== "number" || newRev < 0)
+                continue; // another device pushed first — go round again and merge with it
+            cfg = writeSyncConfig({ lastRev: newRev, lastHash: syncHash(data), lastSyncedAt: Date.now() });
+        }
+        else {
+            cfg = writeSyncConfig({ lastRev: row ? row.rev : cfg.lastRev, lastHash: firstTime ? localHash : cfg.lastHash, lastSyncedAt: Date.now() });
+        }
+        break;
+    }
+    await syncFilesUp(cfg);
+    return "ok";
+}
+// Project file bytes: uploaded once each, to <your user id>/<blobKey> in the
+// private bucket. A file whose bytes aren't on this device is skipped — the
+// device that has them uploads them.
+async function syncFilesUp(cfg) {
+    let local;
+    try { local = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
+    catch (e) { return; }
+    const done = new Set(Array.isArray(cfg.uploaded) ? cfg.uploaded : []);
+    const keys = projectFileKeys(local.projects).filter(k => !done.has(k) && SYNC_SAFE_FILE_KEY.test(k));
+    for (const k of keys) {
+        const blob = await syncWithTimeout(getFileBlob(k), 15000, "file store stalled").catch(() => null);
+        if (!blob)
+            continue;
+        const res = await sbFetch(cfg, `/storage/v1/object/${SYNC_BUCKET}/${cfg.session.user_id}/${k}`, { method: "POST", body: blob, timeoutMs: 300000, headers: { "Content-Type": blob.type || "application/octet-stream", "x-upsert": "false" } });
+        let already = res.status === 409;
+        if (!res.ok && !already) {
+            try {
+                const body = await res.clone().json();
+                already = String(body.statusCode) === "409" || /exist|duplicate/i.test(body.message || body.error || "");
+            }
+            catch (e) { /* not JSON */ }
+        }
+        if (!res.ok && !already) {
+            console.warn("[everything] Couldn't upload project file", k, res.status);
+            continue; // tried again next round
+        }
+        done.add(k);
+        cfg = writeSyncConfig({ uploaded: [...done] });
+    }
+}
+// Called when an open project shows a file whose bytes aren't on this device.
+// Downloads them from the bucket and stores them in the file store, so it's a
+// one-time fetch. Resolves to the Blob, or null if sync is off or it isn't there.
+async function syncFetchFile(blobKey) {
+    if (!syncIsOn() || !SYNC_SAFE_FILE_KEY.test(blobKey || ""))
+        return null;
+    try {
+        const cfg = await syncFreshConfig();
+        if (!cfg)
+            return null;
+        const res = await sbFetch(cfg, `/storage/v1/object/authenticated/${SYNC_BUCKET}/${cfg.session.user_id}/${blobKey}`, { timeoutMs: 300000 });
+        if (!res.ok)
+            return null;
+        const blob = await res.blob();
+        if (!blob.size || blob.size > MAX_PROJECT_FILE_BYTES)
+            return null;
+        // Never overwrite bytes that turned up here in the meantime.
+        if (await getFileBlob(blobKey).catch(() => null))
+            return await getFileBlob(blobKey);
+        await putFileBlob(blobKey, blob);
+        const done = new Set(Array.isArray(cfg.uploaded) ? cfg.uploaded : []);
+        done.add(blobKey);
+        writeSyncConfig({ uploaded: [...done] });
+        return blob;
+    }
+    catch (e) {
+        console.warn("[everything] Couldn't download project file", blobKey, e);
+        return null;
+    }
+}
 // ── AI & data (unchanged logic) ──────────────────────────────────────────────
 let _id = 400;
 const uid = () => ++_id;
@@ -2836,6 +3299,161 @@ function WidgetCard({ w, customize, onHide, onToggleSize, onDragStart, onDragOve
 // ── SettingsView — defined OUTSIDE App so it has a stable reference ──────────
 // (Components with their own hooks must live outside App to avoid remounting
 //  on every App render, which would cause inputs to lose focus.)
+// Settings → Sync. Self-contained: everything it needs lives in the "Optional
+// sync" section near the top, so App doesn't have to pass anything in.
+function SyncPanel() {
+    const status = useSyncStatus();
+    const [cfg, setCfg] = useState(() => readSyncConfig());
+    const [urlDraft, setUrlDraft] = useState(() => cfg.url || "");
+    const [keyDraft, setKeyDraft] = useState(() => cfg.key || "");
+    const [email, setEmail] = useState(() => cfg.email || "");
+    const [password, setPassword] = useState(""); // held only until Sign in is pressed — never saved
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null); // { ok: bool, text }
+    const [hasSnapshot, setHasSnapshot] = useState(false);
+    const [confirmUndo, setConfirmUndo] = useState(false);
+    const [, setTick] = useState(0);
+    const refresh = () => setCfg(readSyncConfig());
+    useEffect(() => { refresh(); }, [status]);
+    useEffect(() => {
+        readSyncSnapshot().then(s => setHasSnapshot(!!s));
+        const id = setInterval(() => setTick(t => t + 1), 30000); // keeps "synced 2 min ago" honest
+        return () => clearInterval(id);
+    }, [status]);
+    const signedIn = !!(cfg.url && cfg.key && cfg.session);
+    const configured = !!(cfg.url && cfg.key);
+    async function run(fn) {
+        setBusy(true);
+        setMsg(null);
+        try { await fn(); }
+        catch (e) { setMsg({ ok: false, text: (e && e.message) || "Something went wrong." }); }
+        setBusy(false);
+        refresh();
+    }
+    function saveServer() {
+        const url = urlDraft.trim().replace(/\/+$/, "");
+        const key = keyDraft.trim();
+        // https always; plain http only for a Supabase running on this computer (supabase start).
+        if (!/^(https:\/\/[^\s/]+|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)$/i.test(url)) {
+            setMsg({ ok: false, text: "The project URL should look like https://abcdefgh.supabase.co" });
+            return;
+        }
+        const problem = syncKeyProblem(key);
+        if (problem) {
+            setMsg({ ok: false, text: problem });
+            return;
+        }
+        writeSyncConfig({ url, key, session: null, lastRev: null, lastHash: null, uploaded: [] });
+        setMsg(null);
+        refresh();
+    }
+    function forgetServer() {
+        syncSignOut().finally(() => {
+            writeSyncConfig({ url: "", key: "" });
+            setUrlDraft("");
+            setKeyDraft("");
+            refresh();
+        });
+    }
+    const signIn = (e) => {
+        e.preventDefault();
+        run(async () => {
+            if (!/^\S+@\S+\.\S+$/.test(email.trim()) || !password)
+                throw new Error("Enter the email and password of the account you created in your Supabase project.");
+            await syncSignIn(email, password);
+            setPassword("");
+            await runSync();
+        });
+    };
+    const syncNow = () => run(() => runSync());
+    const signOut = () => run(async () => { await syncSignOut(); setMsg({ ok: true, text: "Signed out. Your data stays on this device; it just stops syncing." }); });
+    const undo = () => run(async () => {
+        setConfirmUndo(false);
+        if (!(await undoLastSyncChange()))
+            throw new Error("Couldn't restore that copy. Nothing was changed.");
+        setMsg({ ok: true, text: "Restored. Reloading app…" });
+        setTimeout(() => window.location.reload(), 1200);
+    });
+    const ago = cfg.lastSyncedAt ? (() => {
+        const m = Math.round((Date.now() - cfg.lastSyncedAt) / 60000);
+        return m < 1 ? "just now" : m < 60 ? `${m} min ago` : new Date(cfg.lastSyncedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    })() : null;
+    const btnBase = { padding: "10px 16px", borderRadius: 4, cursor: busy ? "default" : "pointer", fontSize: 12.5, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 7, border: "none" };
+    const primary = { ...btnBase, background: T.ink, color: "#FFFFFF" };
+    const quiet = { ...btnBase, background: "transparent", color: T.ink2, border: `1px solid ${T.line}`, fontSize: 12 };
+    const input = { width: "100%", fontSize: 13, padding: "8px 10px", background: T.panelAlt, border: `1.5px solid ${T.lineSoft}`, borderRadius: 3, color: T.ink, outline: "none", boxSizing: "border-box", fontFamily: "inherit" };
+    const note = { fontSize: 10.5, color: T.ink3, marginTop: 10, lineHeight: 1.5 };
+    const statusLine = status.state === "syncing" ? { icon: "ti-loader-2", text: "Syncing…", color: T.ink2 }
+        : status.state === "stale" || status.state === "empty" ? { icon: "ti-alert-triangle", text: status.text, color: "#8a5a00" }
+            : status.state === "error" ? { icon: "ti-alert-circle", text: status.text, color: "#c0392b" }
+                : status.text ? { icon: "ti-info-circle", text: status.text, color: T.ink2 }
+                    : { icon: "ti-circle-check", text: ago ? `Synced ${ago}.` : "Signed in — the first sync runs in a moment.", color: "#1A6636" };
+    return React.createElement("div", { style: { marginBottom: 26 } },
+        React.createElement("span", { style: C.lbl }, "Sync (optional)"),
+        React.createElement("div", { style: { ...C.refCard } },
+            !configured && React.createElement("div", null,
+                React.createElement("div", { style: { fontSize: 13, color: T.ink2, marginBottom: 14, lineHeight: 1.6 } },
+                    "Off. Sync keeps your phone and laptop on one copy of your data, through a free Supabase project that you set up and own. Leave this alone and nothing changes — your data stays only in this browser. Setup steps are in ",
+                    React.createElement("strong", { style: { color: T.ink } }, "SYNC-SETUP.md"),
+                    " in the app's folder."),
+                React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 } },
+                    React.createElement("input", { value: urlDraft, onChange: e => setUrlDraft(e.target.value), placeholder: "Project URL — https://….supabase.co", autoCapitalize: "off", autoCorrect: "off", spellCheck: false, style: input }),
+                    React.createElement("input", { value: keyDraft, onChange: e => setKeyDraft(e.target.value), placeholder: "Publishable / anon key (never the secret one)", autoCapitalize: "off", autoCorrect: "off", spellCheck: false, style: input })),
+                React.createElement("button", { onClick: saveServer, style: primary },
+                    React.createElement("i", { className: "ti ti-plug-connected", style: { fontSize: 15 }, "aria-hidden": true }),
+                    "Connect")),
+            configured && !signedIn && React.createElement("div", null,
+                React.createElement("div", { style: { fontSize: 13, color: T.ink2, marginBottom: 12, lineHeight: 1.6 } },
+                    "Connected to ",
+                    React.createElement("strong", { style: { color: T.ink } }, cfg.url.replace(/^https:\/\//, "")),
+                    ". Sign in with the account you created in your Supabase project (Authentication → Users). Signing in on a device that already has data merges it with the cloud copy, the same way Import does: nothing is replaced."),
+                status.text && React.createElement("div", { style: { fontSize: 12, color: T.ink2, marginBottom: 10 } }, status.text),
+                // A real <form> with username/current-password fields, so the
+                // browser's password manager offers to save and fill it.
+                React.createElement("form", { onSubmit: signIn, style: { display: "flex", flexDirection: "column", gap: 8 } },
+                    React.createElement("input", { value: email, onChange: e => setEmail(e.target.value), type: "email", name: "email", autoComplete: "username", placeholder: "you@example.com", autoCapitalize: "off", style: input }),
+                    React.createElement("input", { value: password, onChange: e => setPassword(e.target.value), type: "password", name: "password", autoComplete: "current-password", placeholder: "Password", style: input }),
+                    React.createElement("div", null,
+                        React.createElement("button", { type: "submit", disabled: busy, style: primary },
+                            React.createElement("i", { className: `ti ${busy ? "ti-loader-2" : "ti-login"}`, style: { fontSize: 15 }, "aria-hidden": true }),
+                            "Sign in"))),
+                React.createElement("button", { onClick: forgetServer, style: { ...quiet, marginTop: 12, border: "none", padding: "4px 0" } }, "Use a different project")),
+            signedIn && React.createElement("div", null,
+                React.createElement("div", { style: { fontSize: 13, color: T.ink2, marginBottom: 10, lineHeight: 1.6 } },
+                    "Sync is on for ",
+                    React.createElement("strong", { style: { color: T.ink } }, cfg.session.email || cfg.email || "your account"),
+                    ". Changes upload a few seconds after you make them, and this device checks for changes from your other devices whenever you come back to it."),
+                React.createElement("div", { style: { fontSize: 12, color: statusLine.color, marginBottom: 12, display: "flex", alignItems: "flex-start", gap: 6, lineHeight: 1.5 } },
+                    React.createElement("i", { className: `ti ${statusLine.icon}`, style: { fontSize: 13, marginTop: 2, flexShrink: 0 }, "aria-hidden": true }),
+                    statusLine.text),
+                status.state === "empty" ? React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+                    React.createElement("button", { onClick: () => run(() => syncResolveEmpty(false, status.rev)), disabled: busy, style: primary }, "Keep this device's data"),
+                    React.createElement("button", { onClick: () => run(() => syncResolveEmpty(true, status.rev)), disabled: busy, style: quiet }, "Empty this device too"))
+                : React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+                    status.state === "stale"
+                        ? React.createElement("button", { onClick: () => window.location.reload(), style: primary }, "Reload")
+                        : React.createElement("button", { onClick: syncNow, disabled: busy || status.state === "syncing", style: primary },
+                            React.createElement("i", { className: "ti ti-refresh", style: { fontSize: 15 }, "aria-hidden": true }),
+                            "Sync now"),
+                    React.createElement("button", { onClick: signOut, disabled: busy, style: quiet }, "Sign out")),
+                hasSnapshot && React.createElement("div", { style: { marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${T.lineSoft}` } },
+                    !confirmUndo ? React.createElement("div", null,
+                        React.createElement("button", { onClick: () => setConfirmUndo(true), style: quiet },
+                            React.createElement("i", { className: "ti ti-arrow-back-up", style: { fontSize: 14 }, "aria-hidden": true }),
+                            "Undo last sync change"),
+                        React.createElement("div", { style: note }, "Puts this device back to how it was right before sync last changed it. The restored copy then syncs out to your other devices."))
+                        : React.createElement("div", { style: { padding: "12px 14px", borderRadius: 4, background: "#FFF8E8", border: "1px solid rgba(180,120,0,0.25)" } },
+                            React.createElement("div", { style: { fontSize: 12.5, color: "#8a5a00", marginBottom: 10, fontWeight: 500, lineHeight: 1.5 } }, "This puts this device back to right before the last sync change, including undoing anything you've done here since. Your other devices pick up the restored copy on their next sync."),
+                            React.createElement("div", { style: { display: "flex", gap: 8 } },
+                                React.createElement("button", { onClick: undo, style: { ...btnBase, background: "#8a5a00", color: "#fff", fontSize: 12 } }, "Yes, restore it"),
+                                React.createElement("button", { onClick: () => setConfirmUndo(false), style: quiet }, "Cancel"))))),
+            msg && React.createElement("div", { style: { fontSize: 12, padding: "8px 11px", borderRadius: 8, marginTop: 12,
+                    background: msg.ok ? "#F0FAF4" : "#FFF0F0",
+                    color: msg.ok ? "#1A6636" : "#c0392b",
+                    border: `1px solid ${msg.ok ? "rgba(26,102,54,0.2)" : "#f5c6c6"}`,
+                } }, msg.text),
+            React.createElement("div", { style: note }, "Your sync project belongs to you: the data sits in your Supabase account, not with EVERYTHING. Backups still work the same way and are still worth keeping.")));
+}
 function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBarModule, onReplayOnboarding, onReplayTour, renderDoneHistory, doneCount, openDone, onDoneJumpHandled }) {
     const [importStatus, setImportStatus] = useState(null);
     const [importMsg, setImportMsg] = useState("");
@@ -2930,7 +3548,7 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
             React.createElement("div", { style: { fontSize: 13, color: T.ink2, marginBottom: 16, lineHeight: 1.6 } },
                 "Everything you enter lives ",
                 React.createElement("strong", { style: { color: T.ink } }, "only in this browser, on this device"),
-                ". It is never uploaded or sent anywhere. That also means it won't follow you to another browser or computer, so export a backup before clearing data or switching."),
+                ". It is never uploaded or sent anywhere unless you turn on Sync below. Without Sync it won't follow you to another browser or computer, so export a backup before clearing data or switching."),
             React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
                 React.createElement("button", { onClick: () => handleExport(false), disabled: exporting, title: "Everything, including project files", style: { ...btnBase, background: T.ink, color: "#FFFFFF" } },
                     React.createElement("i", { className: `ti ${exporting ? "ti-loader-2" : "ti-download"}`, style: { fontSize: 15 }, "aria-hidden": true }),
@@ -3006,6 +3624,7 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
         React.createElement("div", { style: { fontSize: 11, color: T.ink3, marginBottom: 26, marginTop: 6, fontStyle: "italic", display: "flex", alignItems: "center", gap: 5 } },
             React.createElement("i", { className: "ti ti-device-floppy", style: { fontSize: 12 }, "aria-hidden": true }),
             "Data saves automatically after every change."),
+        React.createElement(SyncPanel),
         // ── Done — the finished-task history that used to be its own tab ─────────
         React.createElement("div", { ref: doneRef, "data-tour": "settings-done", style: { marginBottom: 26 } },
             React.createElement("span", { style: C.lbl }, "Done"),
@@ -3466,7 +4085,7 @@ function App() {
         const id = setInterval(() => setNowTick(Date.now()), 1000);
         return () => clearInterval(id);
     }, [runningTimer]);
-    const [workFolders] = useState(() => S.workFolders ?? []); // saved folders kept for backward-compat area tagging; no longer user-editable
+    const [workFolders, setSavedWorkFolders] = useState(() => S.workFolders ?? []); // saved folders kept for backward-compat area tagging; no longer user-editable
     // Keep the module-level AREAS/AREA_MAP mirror in sync every render so the
     // picker, chips and filters always reflect the current Work folders.
     setWorkFolders(workFolders);
@@ -3819,6 +4438,44 @@ function App() {
         });
     }, [plan,
         widgets, activePreset, modules, bottomBarModule, onboardingSeen, projects, calendarEvents, completedToday, completedDate, doneLog, ideas, notes, lists, timeEntries, runningTimer, workFolders]);
+    // ── Optional sync (see "Optional sync" near the top) — every call below is
+    //    a no-op unless sync has been set up and signed in on this device. ────
+    // Uploads changes a few seconds after they stop.
+    useEffect(() => { requestSync(3000); }, [plan, modules, onboardingSeen, projects, calendarEvents, completedToday, completedDate, doneLog, ideas, notes, lists, timeEntries, runningTimer, workFolders]);
+    // Checks for changes from the other device on open, on coming back to the
+    // app, on reconnecting, and once a minute while it's on screen.
+    useEffect(() => {
+        _applySyncedState = (next) => {
+            syncUidCounter(next);
+            setPlan(next.plan);
+            setModules(normalizeModules(next.modules));
+            setOnboardingSeen(!!next.onboardingSeen);
+            setProjects(next.projects);
+            setCalendarEvents(next.calendarEvents);
+            setCompletedToday(next.completedToday);
+            setCompletedDate(next.completedDate);
+            setDoneLog(next.doneLog);
+            setIdeas(next.ideas);
+            setNotes(next.notes);
+            setLists(next.lists);
+            setTimeEntries(next.timeEntries);
+            setRunningTimer(next.runningTimer);
+            setSavedWorkFolders(next.workFolders);
+        };
+        const wake = () => requestSync(0);
+        document.addEventListener("visibilitychange", wake);
+        window.addEventListener("focus", wake);
+        window.addEventListener("online", wake);
+        const minutely = setInterval(() => { if (document.visibilityState === "visible") requestSync(0); }, 60000);
+        requestSync(0);
+        return () => {
+            _applySyncedState = null;
+            document.removeEventListener("visibilitychange", wake);
+            window.removeEventListener("focus", wake);
+            window.removeEventListener("online", wake);
+            clearInterval(minutely);
+        };
+    }, []);
     const allTasks = SECS.flatMap(s => plan[s.key] || []);
     const doneTasks = allTasks.filter(t => t.done);
     const notDoneTasks = allTasks.filter(t => !t.done);
@@ -4919,7 +5576,8 @@ function App() {
         if (!needed.length)
             return;
         let cancelled = false;
-        Promise.all(needed.map(k => getFileBlob(k).then(b => [k, b ? URL.createObjectURL(b) : null]).catch(() => [k, null]))).then(pairs => {
+        // Bytes not on this device come down from the sync project, if sync is on.
+        Promise.all(needed.map(k => getFileBlob(k).then(b => b || syncFetchFile(k)).then(b => [k, b ? URL.createObjectURL(b) : null]).catch(() => [k, null]))).then(pairs => {
             if (cancelled) {
                 pairs.forEach(([, u]) => { if (u) URL.revokeObjectURL(u); });
                 return;
@@ -6224,13 +6882,15 @@ function App() {
     // NAV_ALL instead — see MOBILE_NAV_CONFIG's comment — so the phone bottom
     // bar shows Notes even when the Notes module toggle is off, without
     // changing what the desktop sidebar or Settings toggle do.
+    // Round 12: no count badges on nav tabs — they read as noise, not signal.
+    // The render code still supports an optional `badge` field if one is ever
+    // wanted back; just add it to an entry here.
     const NAV_ALL = [
         { key: "today", icon: "ti-layout-dashboard", label: "Today" },
-        // Badge counts only today + next 7 days so past events stop inflating it
-        { key: "calendar", icon: "ti-calendar", label: "Calendar", badge: calendarEvents.filter(ev => ev.title && isUpcomingEvent(ev)).length || undefined },
-        { key: "notes", icon: "ti-bulb", label: "Thoughts", badge: (notes.filter(n => !n.archived).length + ideas.filter(i => !i.archived).length) || undefined },
+        { key: "calendar", icon: "ti-calendar", label: "Calendar" },
+        { key: "notes", icon: "ti-bulb", label: "Thoughts" },
         { key: "projects", icon: "ti-folder", label: "Projects" },
-        { key: "lists", icon: "ti-list-check", label: "Lists", badge: lists.length || undefined },
+        { key: "lists", icon: "ti-list-check", label: "Lists" },
         { key: "timeclock", icon: "ti-clock-play", label: "Time Clock" },
         { key: "settings", icon: "ti-settings", label: "Settings" },
     ];

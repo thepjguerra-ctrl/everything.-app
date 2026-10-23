@@ -5,14 +5,18 @@
  * WHAT ACTUALLY HAS TO BE CACHED
  * This is a single-file app: every line of app logic lives inline in
  * index.html, and all user data lives in localStorage. The app makes zero
- * network requests once it has booted. So "works offline" reduces to exactly
- * one job — get these to the browser without a network:
+ * network requests once it has booted (optional Sync aside — see below). So
+ * "works offline" reduces to exactly one job — get these to the browser
+ * without a network:
  *   1. index.html            the app itself (markup + all logic + all styles)
  *   2. React + ReactDOM      loaded from a CDN by the boot script
  *   3. Tabler icons          webfont CSS + the .woff2 it points at
  *   4. Anton / Barlow        Google Fonts CSS + the .woff2 files it points at
  *   5. manifest + icons      so an installed copy still has its identity
- * Nothing else exists to cache. There is no API, no data fetch, no upload.
+ * Nothing else exists to cache. There is no API, no data fetch, no upload —
+ * except optional Sync (Settings → Sync), which talks to the user's own
+ * Supabase project. Those requests are cross-origin and not on the vendor
+ * list, so the fetch handler below lets them straight through, never cached.
  *
  * THE TWO STRATEGIES, AND WHY THEY DIFFER
  *
