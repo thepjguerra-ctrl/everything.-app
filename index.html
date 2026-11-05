@@ -1727,11 +1727,12 @@ function syncUidCounter(state) {
 //   cloud same,  changed here     → push this copy
 //   cloud moved, nothing new here → take the cloud copy as it is, so edits and
 //                                   deletes made on the other device arrive
-//   cloud moved, changed here     → both sides did work: mergeAppState (the
-//                                   same add-only merge Import uses), then push
-// The merge is kept for the both-changed case only. It never loses anything,
-// but run on every round it would bring deleted items back and turn every edit
-// into a duplicate. Pushes are compare-and-set on rev (push_state in
+//   cloud moved, changed here     → both sides did work: syncThreeWay, then push
+// syncThreeWay compares each side against the copy both devices last agreed on
+// (the "base", kept in the file store), which is how a deletion is told apart
+// from "the other device never had this". Cleared stays cleared. The add-only
+// mergeAppState is now only for Import and a brand-new device's first sign-in.
+// Pushes are compare-and-set on rev (push_state in
 // SYNC-SETUP.md), so two devices pushing at once can't overwrite each other:
 // the slower one is told it lost the race and goes round again.
 //
@@ -1740,13 +1741,14 @@ function syncUidCounter(state) {
 // Settings → Sync can put it back.
 const SYNC_KEY = "everything-sync"; // this device's sync settings + sign-in — never part of STORAGE_KEY
 const SYNC_SNAPSHOT_KEY = "__pre-sync-snapshot"; // file-store entry: this device's data from just before the last sync change
+const SYNC_BASE_KEY = "__sync-base"; // file-store entry: { rev, data }, the copy this device and the cloud last agreed on
 const SYNC_BUCKET = "project-files";
 // Bump APP_BUILD whenever saved data gains a field. migrateAppState drops
 // fields it doesn't know, so an older copy of this code (an offline-cached one,
 // say) would load the cloud data, lose the new field, and push the stripped
 // copy to every device. Each push is stamped with the build that wrote it, and
 // a device whose build is older refuses to sync and asks for a reload instead.
-const APP_BUILD = 12;
+const APP_BUILD = 13; // 13: both-changed sync is three-way (syncThreeWay). Older code would re-add cleared items, so it has to stop syncing until it reloads.
 // Layout, not content: each device keeps its own.
 const SYNC_DEVICE_ONLY_KEYS = ["widgets", "activePreset", "bottomBarModule", "appVersion"];
 const SYNC_SAFE_FILE_KEY = /^[A-Za-z0-9_-]{1,120}$/;
@@ -1887,9 +1889,12 @@ async function syncSignIn(email, password) {
     const session = sessionFromAuth(await res.json());
     if (!session || !session.user_id)
         throw new Error("Signed in, but Supabase didn't return a session. Try again.");
-    // A fresh sign-in starts from "never synced": the first round merges what's
-    // here with what's in the cloud, exactly like importing a backup.
-    writeSyncConfig({ session, lastRev: null, lastHash: null, uploaded: [] });
+    // A new account on this device starts from "never synced": the first round
+    // merges what's here with what's in the cloud, like importing a backup. The
+    // same account signing back in carries on from where this device left off,
+    // so nothing it already cleared gets added back.
+    const sameUser = readSyncConfig().lastUserId === session.user_id;
+    writeSyncConfig(sameUser ? { session } : { session, lastUserId: session.user_id, lastRev: null, lastHash: null, uploaded: [] });
     setSyncStatus({ state: "idle" });
 }
 // Refreshes the sign-in a minute before it runs out. Returns the config to use,
@@ -1919,7 +1924,7 @@ async function syncSignOut() {
         try { await sbFetch(cfg, "/auth/v1/logout", { method: "POST" }); }
         catch (e) { /* offline — the local sign-out below is what matters */ }
     }
-    writeSyncConfig({ session: null, lastRev: null, lastHash: null, uploaded: [] });
+    writeSyncConfig({ session: null });
     setSyncStatus({ state: "off" });
 }
 // ── Status, shared with the Settings panel ──
@@ -1936,6 +1941,7 @@ function useSyncStatus() {
 }
 // App registers how to put a synced state on screen (its useState setters).
 let _applySyncedState = null;
+let _syncJustApplied = false; // set while a synced copy lands, so it isn't counted as an edit made here
 // ── Scheduling: one round at a time; anything asked for mid-round runs after ──
 let _syncTimer = null;
 let _syncRunning = null;
@@ -1955,7 +1961,7 @@ function runSync() {
         setSyncStatus({ state: "syncing" });
         try {
             const outcome = await runSyncRound();
-            if (outcome === "ok") // stale / signed-out / empty leave their own message up
+            if (outcome === "ok") // stale / signed-out / empty / choose leave their own message up
                 setSyncStatus({ state: "idle" });
         }
         catch (e) {
@@ -1986,6 +1992,161 @@ function syncMerge(local, cloud) {
     const localState = migrateAppState({ ...local, workFolders: folders });
     const incoming = migrateAppState({ ...cloud, workFolders: folders });
     return mergeAppState(localState, incoming).merged;
+}
+// ── Three-way merge ──
+//   in the base, gone from either side → it was cleared, it stays cleared
+//   not in the base, on one side       → it's new, it's kept
+//   changed on one side only           → that change is kept
+//   changed on both                    → the most recent edit wins
+// `newer` is "local" or "cloud": which device edited last.
+function threeWayValue(b, l, c, newer) {
+    const bs = stableStringify(b), ls = stableStringify(l), cs = stableStringify(c);
+    if (ls === cs || cs === bs)
+        return l;
+    if (ls === bs)
+        return c;
+    if (l && c && typeof l.updatedAt === "number" && typeof c.updatedAt === "number" && l.updatedAt !== c.updatedAt)
+        return l.updatedAt > c.updatedAt ? l : c;
+    return newer === "local" ? l : c;
+}
+function threeWayItems(baseArr, localArr, cloudArr, newer, ids, pick = threeWayValue, idOf = x => x.id) {
+    const byId = a => new Map((Array.isArray(a) ? a : []).filter(x => x && typeof x === "object").map(x => [idOf(x), x]));
+    const base = byId(baseArr), local = byId(localArr), cloud = byId(cloudArr);
+    const [first, second] = newer === "local" ? [local, cloud] : [cloud, local];
+    const out = [];
+    first.forEach((item, id) => {
+        if (!base.has(id))
+            out.push(item); // new on the device that edited last
+        else if (second.has(id))
+            out.push(pick(base.get(id), local.get(id), cloud.get(id), newer));
+        // else: cleared on the other device. It stays cleared.
+    });
+    const seen = new Set(out.map(contentKey));
+    second.forEach((item, id) => {
+        if (base.has(id) || seen.has(contentKey(item)))
+            return; // already handled above, or the same thing added on both
+        // Ids come from a per-device counter, so a clash here is two unrelated
+        // new items that landed on one number. Both are kept.
+        out.push(ids ? { ...item, id: ids.take(id) } : item);
+    });
+    return out;
+}
+function threeWayContainer(b, l, c, newer, ids, childKeys) {
+    const CHILDREN = ["sections", "items", "folders", "files"];
+    const out = {};
+    new Set([...Object.keys(b), ...Object.keys(l), ...Object.keys(c)]).forEach(k => {
+        if (!CHILDREN.includes(k))
+            out[k] = threeWayValue(b[k], l[k], c[k], newer);
+    });
+    if (childKeys) {
+        out.sections = {};
+        childKeys.forEach(s => {
+            out.sections[s] = threeWayItems((b.sections || {})[s], (l.sections || {})[s], (c.sections || {})[s], newer, ids);
+        });
+        out.folders = threeWayItems(b.folders, l.folders, c.folders, newer, null);
+        out.files = threeWayItems(b.files, l.files, c.files, newer, null);
+    }
+    else {
+        out.items = threeWayItems(b.items, l.items, c.items, newer, ids);
+    }
+    return out;
+}
+// doneLog has no ids, so entries count as identical text. Both devices filing
+// the same day on their own is one entry, not two.
+function threeWayLog(baseArr, localArr, cloudArr) {
+    const counts = a => {
+        const m = new Map();
+        (Array.isArray(a) ? a : []).forEach(x => { const k = stableStringify(x); m.set(k, (m.get(k) || 0) + 1); });
+        return m;
+    };
+    const b = counts(baseArr), l = counts(localArr), c = counts(cloudArr);
+    const wanted = k => {
+        const from = b.get(k) || 0, dl = (l.get(k) || 0) - from, dc = (c.get(k) || 0) - from;
+        if (dl > 0 && dc > 0)
+            return from + Math.max(dl, dc);
+        if (dl < 0 && dc < 0)
+            return from + Math.min(dl, dc);
+        return Math.max(0, from + dl + dc);
+    };
+    const out = [], left = new Map();
+    [...(Array.isArray(localArr) ? localArr : []), ...(Array.isArray(cloudArr) ? cloudArr : [])].forEach(x => {
+        const k = stableStringify(x);
+        const n = left.has(k) ? left.get(k) : wanted(k);
+        left.set(k, n - 1);
+        if (n > 0)
+            out.push(x);
+    });
+    return out;
+}
+function syncThreeWay(base, local, cloud, newer) {
+    const folders = mergeWorkFolders(mergeWorkFolders(local.workFolders, cloud.workFolders), base.workFolders);
+    const norm = s => migrateAppState({ ...s, workFolders: folders });
+    const B = norm(base), L = norm(local), C = norm(cloud);
+    const ids = newer === "local" ? makeIdSpace(L, C) : makeIdSpace(C, L);
+    const plan = {};
+    PLAN_SECTION_KEYS.forEach(k => { plan[k] = threeWayItems(B.plan[k], L.plan[k], C.plan[k], newer, ids); });
+    const simple = {};
+    ["calendarEvents", "completedToday", "ideas", "notes", "timeEntries"].forEach(k => { simple[k] = threeWayItems(B[k], L[k], C[k], newer, ids); });
+    const container = (k, childKeys) => threeWayItems(B[k], L[k], C[k], newer, ids, (b, l, c) => threeWayContainer(b, l, c, newer, ids, childKeys));
+    const modules = {};
+    MODULE_META.forEach(m => { modules[m.key] = threeWayValue(B.modules[m.key], L.modules[m.key], C.modules[m.key], newer); });
+    const merged = {
+        ...L, // keeps this device's own layout (widgets, activePreset, bottomBarModule)
+        appVersion: APP_VERSION,
+        plan,
+        ...simple,
+        projects: container("projects", PROJECT_SECTION_KEYS),
+        lists: container("lists", null),
+        doneLog: threeWayLog(B.doneLog, L.doneLog, C.doneLog),
+        modules,
+        workFolders: threeWayItems(base.workFolders, local.workFolders, cloud.workFolders, newer, null, threeWayValue, f => f.key),
+        onboardingSeen: !!(L.onboardingSeen || C.onboardingSeen),
+        completedDate: threeWayValue(B.completedDate, L.completedDate, C.completedDate, newer),
+        runningTimer: threeWayValue(B.runningTimer, L.runningTimer, C.runningTimer, newer),
+    };
+    _id = Math.max(_id, ids.highWater());
+    return merged;
+}
+async function saveSyncBase(rev, data) {
+    await putFileBlob(SYNC_BASE_KEY, new Blob([JSON.stringify({ rev, data: syncContent(data) })], { type: "application/json" }));
+    writeSyncConfig({ baseRev: rev });
+}
+async function readSyncBase(rev) {
+    try {
+        const b = await getFileBlob(SYNC_BASE_KEY);
+        const parsed = b ? JSON.parse(await b.text()) : null;
+        return parsed && parsed.rev === rev && looksLikeBackup(parsed.data) ? parsed.data : null;
+    }
+    catch (e) {
+        return null;
+    }
+}
+// Stamped whenever this device's own data changes, so "most recent edit wins"
+// has something to compare with the cloud row's updated_at.
+function syncMarkEdited() {
+    if (syncIsOn())
+        writeSyncConfig({ localEditedAt: Date.now() });
+}
+// Both sides changed and there's no shared copy to compare against. That's a
+// real unknown, so it asks once instead of guessing. See syncResolveChoice.
+const SYNC_ASK = Symbol("ask");
+async function syncCombine(cfg, local, row) {
+    if (cfg.forceRev === row.rev) {
+        writeSyncConfig({ forceRev: null, forceSide: null });
+        return cfg.forceSide === "local" ? migrateAppState(local) : syncTakeCloud(local, row.data);
+    }
+    if (cfg.lastRev == null)
+        return syncMerge(local, row.data); // a brand-new device: nothing shared yet, so nothing is replaced
+    const base = await syncWithTimeout(readSyncBase(cfg.lastRev), 15000, "This browser's file storage stalled. Nothing was changed; it'll try again.");
+    if (!base)
+        return SYNC_ASK;
+    const cloudAt = Date.parse(row.updated_at) || 0;
+    return syncThreeWay(base, local, row.data, (cfg.localEditedAt || 0) > cloudAt ? "local" : "cloud");
+}
+function syncResolveChoice(side, rev) {
+    writeSyncConfig({ forceSide: side, forceRev: rev });
+    setSyncStatus({ state: "idle" });
+    return runSync();
 }
 // The two answers to "your sync copy is empty". Emptying applies that one empty
 // revision here (a later empty one asks again); keeping marks this device as
@@ -2030,6 +2191,9 @@ async function runSyncRound() {
     let cfg = await syncFreshConfig();
     if (!cfg)
         return "signed-out";
+    if (cfg.session.user_id && cfg.lastUserId !== cfg.session.user_id)
+        cfg = writeSyncConfig({ lastUserId: cfg.session.user_id });
+    let agreed = null; // { rev, data }: the copy this device and the cloud both hold once the round ends
     for (let attempt = 0; attempt < 3; attempt++) {
         const localRaw = localStorage.getItem(STORAGE_KEY);
         const local = localRaw ? JSON.parse(localRaw) : {};
@@ -2058,7 +2222,7 @@ async function runSyncRound() {
         const cloudMoved = !!row && row.rev !== cfg.lastRev;
         let next = null;
         if (cloudMoved) {
-            const full = await sbFetch(cfg, "/rest/v1/app_state?select=rev,build,data");
+            const full = await sbFetch(cfg, "/rest/v1/app_state?select=rev,build,data,updated_at");
             if (!full.ok)
                 throw await sbError(full, "Couldn't download your synced data");
             const fullRows = await full.json();
@@ -2073,7 +2237,11 @@ async function runSyncRound() {
                 setSyncStatus({ state: "stale", text: "Your other device is on a newer version of the app. Reload this page to update before syncing — nothing here has been changed." });
                 return "stale";
             }
-            next = changedHere ? syncMerge(local, row.data) : syncTakeCloud(local, row.data);
+            next = changedHere ? await syncCombine(cfg, local, row) : syncTakeCloud(local, row.data);
+            if (next === SYNC_ASK) {
+                setSyncStatus({ state: "choose", rev: row.rev, text: "This device and your other device both changed, and there's no shared copy to compare them against. Pick the one to keep. The other can be put back with Undo last sync change." });
+                return "choose";
+            }
             // An empty cloud copy never empties a device that has data without
             // asking. It's what deleting the last item on another device looks
             // like, but also what a device whose saved data got wiped would push,
@@ -2093,8 +2261,10 @@ async function runSyncRound() {
             if (_applySyncedState)
                 _applySyncedState(next);
             cfg = writeSyncConfig({ lastRev: row.rev, lastHash: syncHash(next), lastSyncedAt: Date.now() });
-            if (!changedHere)
+            if (!changedHere) {
+                agreed = { rev: row.rev, data: next };
                 break;
+            }
         }
         if (changedHere || (!row && syncHasContent(local))) {
             const data = next || local;
@@ -2105,12 +2275,19 @@ async function runSyncRound() {
             if (typeof newRev !== "number" || newRev < 0)
                 continue; // another device pushed first — go round again and merge with it
             cfg = writeSyncConfig({ lastRev: newRev, lastHash: syncHash(data), lastSyncedAt: Date.now() });
+            agreed = { rev: newRev, data };
         }
         else {
             cfg = writeSyncConfig({ lastRev: row ? row.rev : cfg.lastRev, lastHash: firstTime ? localHash : cfg.lastHash, lastSyncedAt: Date.now() });
+            // Nothing moved either way, so this copy IS the shared one. This is
+            // also how a device on the old code gets its first base.
+            if (row && cfg.baseRev !== row.rev)
+                agreed = { rev: row.rev, data: local };
         }
         break;
     }
+    if (agreed)
+        await syncWithTimeout(saveSyncBase(agreed.rev, agreed.data), 15000, "file store stalled").catch(e => console.warn("[everything] Couldn't save the shared sync copy:", e));
     await syncFilesUp(cfg);
     return "ok";
 }
@@ -3384,7 +3561,7 @@ function SyncPanel() {
     const input = { width: "100%", fontSize: 13, padding: "8px 10px", background: T.panelAlt, border: `1.5px solid ${T.lineSoft}`, borderRadius: 3, color: T.ink, outline: "none", boxSizing: "border-box", fontFamily: "inherit" };
     const note = { fontSize: 10.5, color: T.ink3, marginTop: 10, lineHeight: 1.5 };
     const statusLine = status.state === "syncing" ? { icon: "ti-loader-2", text: "Syncing…", color: T.ink2 }
-        : status.state === "stale" || status.state === "empty" ? { icon: "ti-alert-triangle", text: status.text, color: "#8a5a00" }
+        : status.state === "stale" || status.state === "empty" || status.state === "choose" ? { icon: "ti-alert-triangle", text: status.text, color: "#8a5a00" }
             : status.state === "error" ? { icon: "ti-alert-circle", text: status.text, color: "#c0392b" }
                 : status.text ? { icon: "ti-info-circle", text: status.text, color: T.ink2 }
                     : { icon: "ti-circle-check", text: ago ? `Synced ${ago}.` : "Signed in — the first sync runs in a moment.", color: "#1A6636" };
@@ -3426,7 +3603,10 @@ function SyncPanel() {
                 React.createElement("div", { style: { fontSize: 12, color: statusLine.color, marginBottom: 12, display: "flex", alignItems: "flex-start", gap: 6, lineHeight: 1.5 } },
                     React.createElement("i", { className: `ti ${statusLine.icon}`, style: { fontSize: 13, marginTop: 2, flexShrink: 0 }, "aria-hidden": true }),
                     statusLine.text),
-                status.state === "empty" ? React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+                status.state === "choose" ? React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+                    React.createElement("button", { onClick: () => run(() => syncResolveChoice("local", status.rev)), disabled: busy, style: primary }, "Keep this device"),
+                    React.createElement("button", { onClick: () => run(() => syncResolveChoice("cloud", status.rev)), disabled: busy, style: quiet }, "Keep my other device"))
+                : status.state === "empty" ? React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
                     React.createElement("button", { onClick: () => run(() => syncResolveEmpty(false, status.rev)), disabled: busy, style: primary }, "Keep this device's data"),
                     React.createElement("button", { onClick: () => run(() => syncResolveEmpty(true, status.rev)), disabled: busy, style: quiet }, "Empty this device too"))
                 : React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
@@ -4441,11 +4621,21 @@ function App() {
     // ── Optional sync (see "Optional sync" near the top) — every call below is
     //    a no-op unless sync has been set up and signed in on this device. ────
     // Uploads changes a few seconds after they stop.
-    useEffect(() => { requestSync(3000); }, [plan, modules, onboardingSeen, projects, calendarEvents, completedToday, completedDate, doneLog, ideas, notes, lists, timeEntries, runningTimer, workFolders]);
+    const syncFirstRun = useRef(true);
+    useEffect(() => {
+        if (syncFirstRun.current)
+            syncFirstRun.current = false;
+        else if (_syncJustApplied)
+            _syncJustApplied = false;
+        else
+            syncMarkEdited();
+        requestSync(3000);
+    }, [plan, modules, onboardingSeen, projects, calendarEvents, completedToday, completedDate, doneLog, ideas, notes, lists, timeEntries, runningTimer, workFolders]);
     // Checks for changes from the other device on open, on coming back to the
     // app, on reconnecting, and once a minute while it's on screen.
     useEffect(() => {
         _applySyncedState = (next) => {
+            _syncJustApplied = true;
             syncUidCounter(next);
             setPlan(next.plan);
             setModules(normalizeModules(next.modules));
@@ -4463,6 +4653,23 @@ function App() {
             setSavedWorkFolders(next.workFolders);
         };
         const wake = () => requestSync(0);
+        // A second open tab of the app holds its own copy in memory. Without this
+        // its next autosave would write that older copy over newer data.
+        let lastTabHash = null;
+        const otherTab = (e) => {
+            if (e.key !== STORAGE_KEY || !e.newValue || !_applySyncedState)
+                return;
+            try {
+                const parsed = JSON.parse(e.newValue);
+                const h = syncHash(parsed);
+                if (h === lastTabHash)
+                    return; // same content bouncing back from the other tab's autosave
+                lastTabHash = h;
+                _applySyncedState(migrateAppState(parsed));
+            }
+            catch (err) { console.warn("[everything] Couldn't read another tab's save:", err); }
+        };
+        window.addEventListener("storage", otherTab);
         document.addEventListener("visibilitychange", wake);
         window.addEventListener("focus", wake);
         window.addEventListener("online", wake);
@@ -4470,6 +4677,7 @@ function App() {
         requestSync(0);
         return () => {
             _applySyncedState = null;
+            window.removeEventListener("storage", otherTab);
             document.removeEventListener("visibilitychange", wake);
             window.removeEventListener("focus", wake);
             window.removeEventListener("online", wake);
