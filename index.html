@@ -3634,7 +3634,7 @@ function SyncPanel() {
                 } }, msg.text),
             React.createElement("div", { style: note }, "Your sync project belongs to you: the data sits in your Supabase account, not with EVERYTHING. Backups still work the same way and are still worth keeping.")));
 }
-function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBarModule, onReplayOnboarding, onReplayTour, renderDoneHistory, doneCount, openDone, onDoneJumpHandled }) {
+function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBarModule, onReplayTour, onModuleTour, renderDoneHistory, doneCount, openDone, onDoneJumpHandled }) {
     const [importStatus, setImportStatus] = useState(null);
     const [importMsg, setImportMsg] = useState("");
     const [confirmClear, setConfirmClear] = useState(false);
@@ -3716,15 +3716,12 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
                 React.createElement("span", { style: { color: T.red } }, "YOURS.")),
             React.createElement("div", { style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: T.ink3, marginBottom: 10 } }, "MODULES & YOUR DATA."),
             React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
-                React.createElement("button", { onClick: onReplayOnboarding, style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color: T.ink2, background: "none", border: `1.5px solid ${T.lineSoft}`, borderRadius: 3, cursor: "pointer", padding: "5px 10px" } },
-                    React.createElement("i", { className: "ti ti-player-play", style: { fontSize: 12 }, "aria-hidden": true }),
-                    "Replay the welcome tour"),
                 React.createElement("button", { onClick: onReplayTour, style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color: T.ink2, background: "none", border: `1.5px solid ${T.lineSoft}`, borderRadius: 3, cursor: "pointer", padding: "5px 10px" } },
                     React.createElement("i", { className: "ti ti-map-pin", style: { fontSize: 12 }, "aria-hidden": true }),
                     "Replay the guided tour"))),
         // ── Your Data — the most important thing in Settings, kept prominent ──────
         React.createElement("span", { style: C.lbl }, "Your data"),
-        React.createElement("div", { style: { ...C.refCard, marginBottom: 10, border: `2px solid ${T.line}` } },
+        React.createElement("div", { "data-tour": "settings-data", style: { ...C.refCard, marginBottom: 10, border: `2px solid ${T.line}` } },
             React.createElement("div", { style: { fontSize: 13, color: T.ink2, marginBottom: 16, lineHeight: 1.6 } },
                 "Everything you enter lives ",
                 React.createElement("strong", { style: { color: T.ink } }, "only in this browser, on this device"),
@@ -3836,9 +3833,15 @@ function SettingsView({ modules, onToggleModule, bottomBarModule, onPickBottomBa
                 // now (see MOBILE_NAV_CONFIG.bar), not one of the modules competing for
                 // the one promotable slot, so it no longer gets a "Show in bottom bar"
                 // choice — that's OPTIONAL_MODULE_KEYS' job to gate, not just "on".
-                modules[m.key] && OPTIONAL_MODULE_KEYS.includes(m.key) && React.createElement("button", { onClick: () => onPickBottomBarModule(m.key), role: "switch", "aria-checked": bottomBarModule === m.key, style: { alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontWeight: 700, border: `1.5px solid ${bottomBarModule === m.key ? T.red : T.lineSoft}`, background: bottomBarModule === m.key ? "rgba(224,48,48,0.08)" : "transparent", color: bottomBarModule === m.key ? T.red : T.ink3, transition: "all .12s" } },
+                modules[m.key] && React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+                OPTIONAL_MODULE_KEYS.includes(m.key) && React.createElement("button", { onClick: () => onPickBottomBarModule(m.key), role: "switch", "aria-checked": bottomBarModule === m.key, style: { alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontWeight: 700, border: `1.5px solid ${bottomBarModule === m.key ? T.red : T.lineSoft}`, background: bottomBarModule === m.key ? "rgba(224,48,48,0.08)" : "transparent", color: bottomBarModule === m.key ? T.red : T.ink3, transition: "all .12s" } },
                     React.createElement("i", { className: `ti ${bottomBarModule === m.key ? "ti-square-check" : "ti-square"}`, style: { fontSize: 11 }, "aria-hidden": true }),
-                    bottomBarModule === m.key ? "In bottom bar" : "Show in bottom bar"));
+                    bottomBarModule === m.key ? "In bottom bar" : "Show in bottom bar"),
+                // Replays this add-on's mini tour on demand (Round 13) — it only
+                // runs by itself the first time the add-on is switched on.
+                MODULE_TOURS[m.key] && onModuleTour && React.createElement("button", { onClick: () => onModuleTour(m.key), style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontWeight: 700, border: `1.5px solid ${T.lineSoft}`, background: "transparent", color: T.ink3 } },
+                    React.createElement("i", { className: "ti ti-map-pin", style: { fontSize: 11 }, "aria-hidden": true }),
+                    "Show me around")));
         }))));
 }
 // ── Idea edit modal (outside App for stable reference) ───────────────────────
@@ -3941,67 +3944,120 @@ function ImageLightbox({ attachment, onClose }) {
             React.createElement("img", { src: attachment.dataUrl, alt: attachment.name, style: { maxWidth: "100%", maxHeight: "calc(90vh - 50px)", objectFit: "contain", borderRadius: 4, boxShadow: "0 8px 32px rgba(0,0,0,0.4)" } }),
             React.createElement("div", { style: { fontSize: 12, color: "rgba(255,255,255,0.75)" } }, attachment.name))));
 }
-// ── Onboarding walkthrough — welcome modal (replayable from Settings) ────────
-// Round 12: three short slides on the three things worth knowing — Today is
-// the page you live on (and it never needs closing out), Thoughts holds notes
-// and ideas, and Settings is where the extras, backups and Done history are.
-// Skippable at any point (X, backdrop click, or "Skip"); onClose is the only
-// exit path and always marks onboarding as seen.
-const ONBOARDING_SLIDES = [
-    { icon: "ti-layout-dashboard", titlePlain: "YOUR DAY, ", titleRed: "ONE PAGE", titleRest: ".",
-        body: "Today is split into cards — Must Happen, Making, Life Admin, People, Parked. Type straight into any card and check things off. The day just stays open; there's nothing to close out." },
-    { icon: "ti-bulb", titlePlain: "KEEP YOUR ", titleRed: "THOUGHTS", titleRest: ".",
-        body: "Notes and ideas live together under Thoughts — flip between them with the tabs. Anything with a date goes on the Calendar." },
-    { icon: "ti-adjustments-horizontal", titlePlain: "MAKE IT ", titleRed: "YOURS", titleRest: ".",
-        body: "Turn on Projects, Lists, or Time Clock in Settings when you want them. Your backups and your history of finished tasks live there too." },
-];
-function OnboardingModal({ onClose }) {
-    const isMobile = useIsMobile();
-    const [slide, setSlide] = useState(0);
-    const s = ONBOARDING_SLIDES[slide];
-    const isLast = slide === ONBOARDING_SLIDES.length - 1;
-    return (React.createElement("div", { onClick: onClose, style: { position: "absolute", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 70, padding: isMobile ? "1rem" : 0, boxSizing: "border-box" } },
-        React.createElement("div", { onClick: e => e.stopPropagation(), style: { width: isMobile ? "100%" : 400, maxWidth: "100%", background: T.panel, border: `2px solid ${T.line}`, borderRadius: 6, padding: "1.8rem 1.8rem 1.5rem", boxShadow: "0 8px 28px rgba(0,0,0,0.22)", boxSizing: "border-box", position: "relative" } },
-            React.createElement("button", { onClick: onClose, title: "Skip", style: { position: "absolute", top: 14, right: 14, background: "none", border: "none", cursor: "pointer", color: T.ink3, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" } }, "Skip"),
-            React.createElement("div", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: 4, background: T.ink, marginBottom: 18 } },
-                React.createElement("i", { className: `ti ${s.icon}`, style: { fontSize: 20, color: "#FFFFFF" }, "aria-hidden": true })),
-            React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 30, lineHeight: 0.95, textTransform: "uppercase", color: T.ink, marginBottom: 12 } },
-                s.titlePlain,
-                React.createElement("span", { style: { color: T.red } }, s.titleRed),
-                s.titleRest),
-            React.createElement("div", { style: { fontSize: 13.5, color: T.ink2, lineHeight: 1.6, marginBottom: 24 } }, s.body),
-            React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 } },
-                React.createElement("div", { style: { display: "flex", gap: 5 } },
-                    ONBOARDING_SLIDES.map((_, i) => React.createElement("span", { key: i, style: { width: i === slide ? 16 : 6, height: 6, borderRadius: 3, background: i === slide ? T.red : T.lineSoft, transition: "all .15s" } }))),
-                React.createElement("div", { style: { display: "flex", gap: 8 } },
-                    slide > 0 && React.createElement("button", { onClick: () => setSlide(n => n - 1), style: { padding: "8px 14px", borderRadius: 4, cursor: "pointer", fontSize: 12, fontWeight: 700, background: "transparent", color: T.ink2, border: `1.5px solid ${T.lineSoft}` } }, "Back"),
-                    React.createElement("button", { onClick: () => isLast ? onClose() : setSlide(n => n + 1), style: { padding: "8px 18px", borderRadius: 4, cursor: "pointer", fontSize: 12, fontWeight: 800, background: T.red, color: "#FFFFFF", border: "none", letterSpacing: "0.02em" } }, isLast ? "Get Started" : "Next"))))));
-}
 // ── Guided tour — live spotlight walkthrough of the real app (Round 9, item 9
 //    addendum) ────────────────────────────────────────────────────────────────
-// Separate from OnboardingModal above, deliberately: that's a static preview
-// shown before the real app is even visible. This instead drives actual tab
-// navigation (setTab) and points at real, already-rendered elements — each
+// The only walkthrough now (Round 13 retired the old static welcome modal).
+// It drives actual tab navigation (setTab) and points at real, already-rendered
+// elements — each
 // page they land on is tagged with a data-tour attribute (see "today-page",
 // "thoughts-page", "settings-modules" at their render sites) so this never
 // has to duplicate layout details that could drift out of sync with the page
 // itself. A dimmed backdrop with a cutout "spotlight" (a giant box-shadow
 // around the target's real bounding box) plus a small callout card do the
-// pointing; Skip/Back/Next control it, same shape as the welcome modal.
+// pointing; Skip/Back/Next control it.
 const TOUR_STEPS = [
     { tab: "today", target: '[data-tour="today-page"]',
-        title: "Start here: Today.", body: "Type straight into any card and check things off as you go. The day stays open — nothing to close out." },
+        title: "Start here: Today.", body: "Your whole day on one page. Type straight into any card, check things off as you go, and tap the three dots on an item to edit it. The day stays open, so there is nothing to close out." },
+    { tab: "calendar", target: '[data-tour="calendar-add"]',
+        title: "Put dates on the Calendar.", body: "Give an event a title, a day (Friday, tomorrow, or 2026-07-04) and a time, then hit Add. Day, Week and Month up top change how much you see at once." },
     { tab: "notes", target: '[data-tour="thoughts-page"]',
-        title: "Thoughts.", body: "Notes and ideas live together here — switch between them with the tabs up top." },
+        title: "Thoughts.", body: "Notes and ideas live together here. Switch between them with the tabs up top." },
     { tab: "settings", target: '[data-tour="settings-modules"]',
-        title: "Turn on more, any time.", body: "Projects, Lists, and Time Clock are optional — switch them on here. Backups and your Done history live in Settings too." },
+        title: "Turn on more, any time.", body: "Three extras stay off until you want them. Projects keeps one job's tasks and notes together, Lists is for checklists like groceries or packing, and Time Clock tracks your hours and what you still need to invoice." },
+    { tab: "settings", target: '[data-tour="settings-data"]',
+        title: "Your data stays with you.", body: "Everything saves on this device only. Export a backup now and then so you never lose it. You can replay this tour from the top of Settings any time." },
 ];
-function GuidedTour({ setTab, onClose }) {
+// Add-on mini tours (Round 13). Projects, Lists and Time Clock start switched
+// off, so the main tour above can only point at their switches. The first
+// time one is switched on in Settings, App runs its short tour here through
+// the same GuidedTour component, on that add-on's own page.
+const MODULE_TOURS = {
+    projects: [
+        { tab: "projects", target: '[data-tour="projects-page"]',
+            title: "Projects is on.", body: "Make one for each job. Every project keeps its own tasks, notes, ideas, resources and what you are waiting on, all in one place. Find it in the sidebar, or under More on a phone." },
+    ],
+    lists: [
+        { tab: "lists", target: '[data-tour="lists-page"]',
+            title: "Lists is on.", body: "Make a list for anything you check off, like groceries, packing or gear for a shoot. Tap a list to open it and add items. Find it in the sidebar, or under More on a phone." },
+    ],
+    timeclock: [
+        { tab: "timeclock", target: '[data-tour="timeclock-log"]',
+            title: "Time Clock is on.", body: "Start a timer when you begin working, or log the hours afterwards. Put a person or job on each entry so the hours add up per person." },
+        { tab: "timeclock", target: '[data-tour="timeclock-stats"]',
+            title: "See what you are owed.", body: "To Invoice adds up every hour you have not billed yet. Once you have logged some hours, tap To invoice on an entry when it is billed, and use the By person picker to see one person at a time. Find Time Clock in the sidebar, or under More on a phone." },
+    ],
+};
+// Which add-on tours this browser has already shown. Kept under its own
+// localStorage key (like the scene preference), never in the app data model —
+// it is a per-device "don't show this twice" flag, not user data, so it stays
+// out of backups, imports and sync.
+const MODULE_TOURS_SEEN_KEY = "everything-module-tours-seen";
+function moduleTourSeen(key) {
+    try {
+        return !!(JSON.parse(localStorage.getItem(MODULE_TOURS_SEEN_KEY) || "{}") || {})[key];
+    }
+    catch (e) {
+        return false;
+    }
+}
+function markModuleTourSeen(key) {
+    try {
+        const seen = JSON.parse(localStorage.getItem(MODULE_TOURS_SEEN_KEY) || "{}") || {};
+        seen[key] = true;
+        localStorage.setItem(MODULE_TOURS_SEEN_KEY, JSON.stringify(seen));
+    }
+    catch (e) { /* storage unavailable: the tour may just show again */ }
+}
+// Round 13 helpers. The scroll area is shared by every tab and keeps its
+// scroll position across tab switches, and some targets (the Modules list in
+// Settings) sit below the fold — so before spotlighting anything the tour
+// scrolls its target into view, and it only ever spotlights the part of the
+// target that is actually visible. Before this the spotlight could land
+// off-screen and leave the whole page dimmed with nothing lit.
+// Nearest ancestor that clips its content (the app's content pane). With
+// mustScroll it has to actually be scrollable right now — depending on the
+// window size, either that pane scrolls or the whole page does.
+function tourScroller(el, mustScroll) {
+    let p = el.parentElement;
+    while (p) {
+        const oy = getComputedStyle(p).overflowY;
+        if ((oy === "auto" || oy === "scroll") && (!mustScroll || p.scrollHeight > p.clientHeight + 1))
+            return p;
+        p = p.parentElement;
+    }
+    return null;
+}
+function tourScrollTo(el) {
+    const sc = tourScroller(el, true);
+    const er = el.getBoundingClientRect();
+    // No scrollable pane means the page itself scrolls, so measure against
+    // the window instead.
+    const pr = sc ? sc.getBoundingClientRect() : { top: 0, height: window.innerHeight };
+    const viewTop = Math.max(pr.top, 0);
+    const viewHeight = Math.min(pr.top + pr.height, window.innerHeight) - viewTop;
+    // A target taller than most of the view goes to the top; anything
+    // smaller is centred so the callout card has room above or below it.
+    const tall = er.height > viewHeight * 0.6;
+    const delta = tall ? (er.top - viewTop - 12) : (er.top - viewTop) - (viewHeight - er.height) / 2;
+    if (sc)
+        sc.scrollTop += delta;
+    else
+        window.scrollBy(0, delta);
+}
+function tourVisibleRect(el) {
+    const er = el.getBoundingClientRect();
+    const sc = tourScroller(el, false);
+    const pr = sc ? sc.getBoundingClientRect() : { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight };
+    const top = Math.max(er.top, pr.top, 0), left = Math.max(er.left, pr.left, 0);
+    const bottom = Math.min(er.bottom, pr.bottom, window.innerHeight), right = Math.min(er.right, pr.right, window.innerWidth);
+    return { top, left, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+}
+function GuidedTour({ setTab, onClose, onSkip, steps = TOUR_STEPS }) {
     const isMobile = useIsMobile();
     const [step, setStep] = useState(0);
     const [rect, setRect] = useState(null);
-    const s = TOUR_STEPS[step];
-    const isLast = step === TOUR_STEPS.length - 1;
+    const s = steps[step];
+    const isLast = step === steps.length - 1;
     // Switch to this step's tab, then measure its target element once the DOM
     // has painted — the element only exists in the DOM while its own tab is
     // active, so the very first measurement attempt right after a tab switch
@@ -4010,14 +4066,20 @@ function GuidedTour({ setTab, onClose }) {
         setTab(s.tab);
         setRect(null);
         let cancelled = false;
+        let tries = 0;
         function measure() {
             if (cancelled)
                 return;
             const el = document.querySelector(s.target);
-            if (el)
-                setRect(el.getBoundingClientRect());
-            else
-                requestAnimationFrame(measure);
+            if (!el) {
+                // Give up after ~1.5s rather than looping forever; the card
+                // then just shows centred with no spotlight.
+                if (++tries < 90)
+                    requestAnimationFrame(measure);
+                return;
+            }
+            tourScrollTo(el);
+            requestAnimationFrame(() => { if (!cancelled) setRect(tourVisibleRect(el)); });
         }
         requestAnimationFrame(measure);
         return () => { cancelled = true; };
@@ -4028,7 +4090,7 @@ function GuidedTour({ setTab, onClose }) {
         function onReflow() {
             const el = document.querySelector(s.target);
             if (el)
-                setRect(el.getBoundingClientRect());
+                setRect(tourVisibleRect(el));
         }
         window.addEventListener("resize", onReflow);
         window.addEventListener("scroll", onReflow, true);
@@ -4036,7 +4098,13 @@ function GuidedTour({ setTab, onClose }) {
         // eslint-disable-next-line
     }, [step]);
     const pad = 8;
-    const spot = rect ? { top: rect.top - pad, left: rect.left - pad, width: rect.width + pad * 2, height: rect.height + pad * 2 } : null;
+    // rect is already clipped to what's visible (tourVisibleRect); the pad is
+    // clamped too so the red outline never runs off the edge of the screen.
+    const spot = rect && rect.width > 0 && rect.height > 0 ? (() => {
+        const top = Math.max(4, rect.top - pad), left = Math.max(4, rect.left - pad);
+        const bottom = Math.min(window.innerHeight - 4, rect.top + rect.height + pad), right = Math.min(window.innerWidth - 4, rect.left + rect.width + pad);
+        return { top, left, width: right - left, height: bottom - top };
+    })() : null;
     const cardWidth = isMobile ? Math.min(320, window.innerWidth - 32) : 340;
     // Measure the card's real height once it's painted (a step's body text
     // varies in length) rather than guessing — the guess undershooting was
@@ -4074,7 +4142,8 @@ function GuidedTour({ setTab, onClose }) {
             // section on a short screen) — no placement avoids all overlap,
             // so dock to whichever edge has more clearance rather than
             // guessing a spot mid-target.
-            cardTop = spaceBelow >= spaceAbove ? window.innerHeight - cardHeight - margin : margin;
+            // On a phone the bottom dock sits above the tab bar, not on it.
+            cardTop = spaceBelow >= spaceAbove ? window.innerHeight - cardHeight - margin - (isMobile ? 76 : 0) : margin;
             cardLeft = Math.min(Math.max(margin, spot.left), window.innerWidth - cardWidth - margin);
         }
     } else {
@@ -4087,13 +4156,13 @@ function GuidedTour({ setTab, onClose }) {
             : React.createElement("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 71, pointerEvents: "none" } }),
         React.createElement("div", { ref: cardRef, style: { position: "fixed", top: cardTop, left: cardLeft, width: cardWidth, background: T.panel, border: `2px solid ${T.line}`, borderRadius: 6, boxShadow: "0 8px 28px rgba(0,0,0,0.3)", padding: "16px 18px", zIndex: 72, boxSizing: "border-box" } },
             React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 } },
-                React.createElement("span", { style: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: T.ink3 } }, `Step ${step + 1} of ${TOUR_STEPS.length}`),
-                React.createElement("button", { onClick: onClose, title: "Skip", style: { background: "none", border: "none", cursor: "pointer", color: T.ink3, fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" } }, "Skip")),
+                React.createElement("span", { style: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: T.ink3 } }, steps.length > 1 ? `Step ${step + 1} of ${steps.length}` : "New add-on"),
+                React.createElement("button", { onClick: onSkip || onClose, title: "Skip", style: { background: "none", border: "none", cursor: "pointer", color: T.ink3, fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" } }, "Skip")),
             React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 700, fontSize: 18, textTransform: "uppercase", color: T.ink, marginBottom: 8, lineHeight: 1.05 } }, s.title),
             React.createElement("div", { style: { fontSize: 13, color: T.ink2, lineHeight: 1.55, marginBottom: 16 } }, s.body),
             React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 } },
                 React.createElement("div", { style: { display: "flex", gap: 5 } },
-                    TOUR_STEPS.map((_, i) => React.createElement("span", { key: i, style: { width: i === step ? 16 : 6, height: 6, borderRadius: 3, background: i === step ? T.red : T.lineSoft, transition: "all .15s" } }))),
+                    steps.length > 1 && steps.map((_, i) => React.createElement("span", { key: i, style: { width: i === step ? 16 : 6, height: 6, borderRadius: 3, background: i === step ? T.red : T.lineSoft, transition: "all .15s" } }))),
                 React.createElement("div", { style: { display: "flex", gap: 8 } },
                     step > 0 && React.createElement("button", { onClick: () => setStep(n => n - 1), style: { padding: "8px 14px", borderRadius: 4, cursor: "pointer", fontSize: 12, fontWeight: 700, background: "transparent", color: T.ink2, border: `1.5px solid ${T.lineSoft}` } }, "Back"),
                     React.createElement("button", { onClick: () => isLast ? onClose() : setStep(n => n + 1), style: { padding: "8px 18px", borderRadius: 4, cursor: "pointer", fontSize: 12, fontWeight: 800, background: T.red, color: "#FFFFFF", border: "none", letterSpacing: "0.02em" } }, isLast ? "Got it" : "Next")))));
@@ -4232,19 +4301,13 @@ function App() {
     const [modules, setModules] = useState(() => normalizeModules(S.modules));
     const [bottomBarModule, setBottomBarModule] = useState(() => S.bottomBarModule ?? "projects");
     // onboardingSeen persists across reloads (stops first-launch auto-opening
-    // again); onboardingOpen/tourOpen are transient UI state that actually
-    // control which piece is visible, so Settings can reopen either later
-    // without disturbing onboardingSeen.
-    //
-    // Round 9 (item 9 addendum): the live guided tour (GuidedTour, below) is
-    // now the thing that auto-opens on first launch — same trigger/flag the
-    // static welcome modal used to own. The modal (OnboardingModal) is left
-    // fully intact and still reachable, just no longer auto-fires; it's a
-    // manual "Replay the welcome tour" option in Settings now, same as the
-    // tour is a manual "Replay the guided tour" option.
+    // again); tourOpen is transient UI state that controls whether the guided
+    // tour is visible, so Settings can reopen it later without disturbing
+    // onboardingSeen. The guided tour auto-opens on first launch.
     const [onboardingSeen, setOnboardingSeen] = useState(() => S.onboardingSeen ?? false);
-    const [onboardingOpen, setOnboardingOpen] = useState(false);
     const [tourOpen, setTourOpen] = useState(() => !(S.onboardingSeen ?? false));
+    // Which add-on's mini tour is showing right now (a MODULE_TOURS key), if any.
+    const [moduleTour, setModuleTour] = useState(null);
     const [projects, setProjects] = useState(() => S.projects ?? []);
     const [calendarEvents, setCalendarEvents] = useState(() => S.calendarEvents ?? []);
     const [completedToday, setCompletedToday] = useState(() => S.completedToday ?? []);
@@ -4936,9 +4999,20 @@ function App() {
         const title = calDraftTitle.trim();
         if (!title)
             return;
-        setCalendarEvents(prev => [...prev, { id: uid(), title, dayLabel: pinDayLabel(calDraftDay.trim()) || "Upcoming", timeLabel: calDraftTime.trim(), raw: "" }]);
+        // Round 13: in Day view, an event added with no date typed lands on the
+        // day on screen (today, unless another day is picked — and picking one
+        // already fills the date in) instead of dropping into the Scheduling
+        // Inbox. Week and Month still send an undated event to the Inbox.
+        const typedDay = calDraftDay.trim() || (calMode === "day" ? toISODate(new Date()) : "");
+        const pinnedDay = pinDayLabel(typedDay);
+        setCalendarEvents(prev => [...prev, { id: uid(), title, dayLabel: pinnedDay || "Upcoming", timeLabel: calDraftTime.trim(), raw: "" }]);
         setCalDraftTitle("");
-        setCalDraftDay("");
+        // Round 13: stay on the day the event was just added to. calDraftDay
+        // doubles as the selected day, so clearing it here used to bounce the
+        // whole calendar back to today after every single add — painful when
+        // putting several events on the same day. Only a single concrete date
+        // is kept; a range or an undated event still clears as before.
+        setCalDraftDay(/^\d{4}-\d{2}-\d{2}$/.test(pinnedDay || "") ? pinnedDay : "");
         setCalDraftTime("");
         setAddingCalEvent(false);
     }
@@ -5001,7 +5075,22 @@ function App() {
         setModules(prev => ({ ...prev, [key]: !prev[key] }));
         if (turningOff && tab === key)
             setTab("today");
+        // First time an add-on is switched on, walk through it once (Round 13).
+        // If the main tour is still running (its Settings step invites exactly
+        // this), the add-on tour waits and starts when the main tour ends — see
+        // the render condition. Only one can wait; a second add-on switched on
+        // meanwhile stays unseen, so it still gets its tour next time, or from
+        // "Show me around".
+        if (!turningOff && MODULE_TOURS[key] && !moduleTourSeen(key) && !(tourOpen && moduleTour)) {
+            markModuleTourSeen(key);
+            setModuleTour(key);
+        }
     }
+    function replayModuleTour(key) { markModuleTourSeen(key); setModuleTour(key); }
+    // Finishing an add-on tour leaves you on the add-on's page, ready to use
+    // it. Skipping means "not now", so it puts you back in Settings where the
+    // switch was.
+    function skipModuleTour() { setModuleTour(null); setTab("settings"); }
     // The optional modules (see OPTIONAL_MODULE_KEYS) share ONE mobile bottom-bar
     // slot, symmetrically — picking one clears any previous pick automatically
     // since bottomBarModule only ever holds a single key. Picking the module
@@ -5009,8 +5098,6 @@ function App() {
     function pickBottomBarModule(key) { setBottomBarModule(prev => prev === key ? null : key); }
     // Skipping and finishing the walkthrough both just close it and mark it seen —
     // "skippable at any point" means neither path should re-trigger it on reload.
-    function closeOnboarding() { setOnboardingOpen(false); setOnboardingSeen(true); }
-    function replayOnboarding() { setOnboardingOpen(true); }
     function closeTour() { setTourOpen(false); setOnboardingSeen(true); }
     function replayTour() { setTourOpen(true); }
     // Any manual layout change marks the layout "custom" so the Mode row highlights
@@ -5354,32 +5441,44 @@ function App() {
         }
 
         // ── Week View ──────────────────────────────────────────────────────────
+        // Round 13: one row per day, stacked top to bottom (was seven narrow
+        // columns side by side that cut every event title off after a few
+        // letters). Each row shows every event that day in time order, with
+        // its full title. Tapping a row picks that day for Add Event and
+        // stays in Week view; tapping an event opens the event.
         function renderWeekView() {
-            return React.createElement("div", {style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:8}},
+            return React.createElement("div", {style:{display:"flex",flexDirection:"column",gap:6}},
                 weekDays.map((d,di) => {
                     const isT = isSameDay(d, todayDate);
                     const isSel = isSameDay(d, selectedDate);
-                    const dayEvs = eventsForDate(d);
+                    const dayEvs = eventsForDate(d).slice().sort((a,b) => {
+                        const ha = parseHour(a.timeLabel), hb = parseHour(b.timeLabel);
+                        return (ha === null ? -1 : ha) - (hb === null ? -1 : hb);
+                    });
                     const isoStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
                     return React.createElement("div", {
                         key:di,
-                        onClick:()=>{ setCalDraftDay(isoStr); setCalMode("day"); },
-                        style:{border:isT?`1.5px solid ${T.red}`:isSel?T.actionBorder:T.cardBorder,borderRadius:4,background:T.panel,boxShadow:isT?`0 0 0 3px rgba(224,48,48,0.09)`:T.cardShadow,padding:"8px 7px",cursor:"pointer",minHeight:100,minWidth:0,overflow:"hidden"}
+                        onClick:()=>setCalDraftDay(isoStr),
+                        style:{display:"flex",alignItems:"stretch",gap:12,border:isT?`1.5px solid ${T.red}`:isSel?T.actionBorder:T.cardBorder,borderRadius:4,background:T.panel,boxShadow:isT?`0 0 0 3px rgba(224,48,48,0.09)`:T.cardShadow,padding:"10px 12px",cursor:"pointer",minWidth:0}
                     },
-                        React.createElement("div", {style:{marginBottom:6}},
-                            React.createElement("div", {style:{fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.1em",color:isT?T.red:T.ink3}}, STRIP_LABELS[di]),
-                            React.createElement("div", {style:{fontFamily:FONT_CONDENSED,fontSize:18,fontWeight:400,color:isT?T.red:T.ink,lineHeight:1}}, d.getDate())
+                        React.createElement("div", {style:{width:40,flexShrink:0}},
+                            React.createElement("div", {style:{fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.1em",color:isT?T.red:T.ink3,marginBottom:2}}, STRIP_LABELS[di]),
+                            React.createElement("div", {style:{fontFamily:FONT_CONDENSED,fontSize:22,fontWeight:400,color:isT?T.red:T.ink,lineHeight:1}}, d.getDate())
                         ),
-                        dayEvs.length===0
-                            ? React.createElement("div", {style:{fontSize:9.5,color:T.ink3,fontStyle:"italic",opacity:0.5}}, "Free")
-                            : React.createElement("div", null,
-                                dayEvs.slice(0,3).map(ev => React.createElement("div", {
+                        React.createElement("div", {style:{flex:1,minWidth:0,borderLeft:`1px solid ${T.lineSoft}`,paddingLeft:12,display:"flex",flexDirection:"column",justifyContent:"center",gap:4,minHeight:36}},
+                            dayEvs.length===0
+                                ? React.createElement("div", {style:{fontSize:11,color:T.ink3,fontStyle:"italic",opacity:0.55}}, "Free")
+                                : dayEvs.map(ev => React.createElement("div", {
                                     key:ev.id,
                                     onClick:e=>{e.stopPropagation();setCalModal(ev);},
-                                    style:{fontSize:9.5,lineHeight:1.3,padding:"2px 5px",marginBottom:2,borderRadius:2,background:isT?"rgba(224,48,48,0.08)":T.panelAlt,color:isT?T.red:T.ink,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis",cursor:"pointer"}
-                                }, `${ev.timeLabel?ev.timeLabel+" ":""}${ev.title}`)),
-                                dayEvs.length>3 && React.createElement("div", {style:{fontSize:9,color:T.ink3,paddingLeft:4}}, `+${dayEvs.length-3} more`)
-                            )
+                                    style:{display:"flex",alignItems:"baseline",gap:10,padding:"5px 8px",borderRadius:3,background:isT?"rgba(224,48,48,0.06)":T.panelAlt,cursor:"pointer",minWidth:0}
+                                },
+                                    ev.timeLabel
+                                        ? React.createElement("span", {style:{fontSize:11,fontWeight:700,color:T.red,flexShrink:0,minWidth:58,fontFamily:FONT_CONDENSED,letterSpacing:"0.03em"}}, ev.timeLabel)
+                                        : React.createElement("span", {style:{fontSize:10,color:T.ink3,flexShrink:0,minWidth:58,fontStyle:"italic"}}, "All day"),
+                                    React.createElement("span", {style:{flex:1,minWidth:0,fontSize:12.5,fontWeight:500,color:T.ink,lineHeight:1.35,wordBreak:"break-word"}}, ev.title)
+                                ))
+                        )
                     );
                 })
             );
@@ -5530,7 +5629,7 @@ function App() {
 
         // ── Add Event form ─────────────────────────────────────────────────────
         function renderAddForm() {
-            return React.createElement("div",{style:{border:T.cardBorder,borderRadius:4,background:T.panel,boxShadow:T.cardShadow,overflow:"hidden",marginTop:18,marginBottom:18}},
+            return React.createElement("div",{"data-tour":"calendar-add",style:{border:T.cardBorder,borderRadius:4,background:T.panel,boxShadow:T.cardShadow,overflow:"hidden",marginTop:18,marginBottom:18}},
                 React.createElement("div",{style:{padding:"8px 14px 7px",borderBottom:`1px solid ${T.lineSoft}`,display:"flex",alignItems:"center",gap:8}},
                     React.createElement("i",{className:"ti ti-calendar-plus",style:{fontSize:13,color:T.red}}),
                     React.createElement("span",{style:{fontFamily:FONT_CONDENSED,fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.1em",color:T.ink}},"Add Event"),
@@ -6230,7 +6329,7 @@ function App() {
         const projAreaAll = projects.filter(proj => areaMatchesFilter(proj.area, projectAreaFilter));
         const projActiveInArea = projAreaAll.filter(proj => !proj.done);
         const projDoneInArea = projAreaAll.filter(proj => proj.done);
-        return (React.createElement("div", { style: { padding: "1.6rem 1.8rem", maxWidth: 900, boxSizing: "border-box" } },
+        return (React.createElement("div", { "data-tour": "projects-page", style: { padding: "1.6rem 1.8rem", maxWidth: 900, boxSizing: "border-box" } },
             React.createElement("div", { style: { marginBottom: 20 } },
                 React.createElement("div", { style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3, marginBottom: 4 } }, new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })),
                 React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 38, lineHeight: 0.9, color: T.ink, textTransform: "uppercase", letterSpacing: "0" } },
@@ -6385,7 +6484,7 @@ function App() {
         }
         // ── LISTS OVERVIEW ────────────────────────────────────────────────────────
         const listAreaAll = lists.filter(l => areaMatchesFilter(l.area, listAreaFilter));
-        return (React.createElement("div", { style: { padding: "1.6rem 1.8rem", maxWidth: 640, boxSizing: "border-box" } },
+        return (React.createElement("div", { "data-tour": "lists-page", style: { padding: "1.6rem 1.8rem", maxWidth: 640, boxSizing: "border-box" } },
             React.createElement("div", { style: { marginBottom: 20 } },
                 React.createElement("div", { style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3, marginBottom: 4 } }, new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })),
                 React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 38, lineHeight: 0.9, color: T.ink, textTransform: "uppercase", letterSpacing: "0" } },
@@ -6459,7 +6558,7 @@ function App() {
         const allMinutes = filtered.reduce((acc, e) => acc + e.minutes, 0) + (runningInFilter ? liveMinutes : 0);
         const toInvoice = filtered.filter(e => !e.invoiced);
         const toInvoiceMinutes = toInvoice.reduce((acc, e) => acc + e.minutes, 0);
-        const filterLabel = timeClientFilter === "all" ? "every client" : timeClientFilter === "__untagged__" ? "untagged entries" : timeClientFilter;
+        const filterLabel = timeClientFilter === "all" ? "everyone" : timeClientFilter === "__untagged__" ? "untagged entries" : timeClientFilter;
         const sorted = [...filtered].sort((a, b) => b.createdAt - a.createdAt);
         function entryAgo(e) {
             const d = Math.floor((Date.now() - e.createdAt) / 86400000);
@@ -6481,7 +6580,7 @@ function App() {
                 React.createElement("div", { style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: T.ink3, marginTop: 6 } }, "HOURS WORKED, KEPT HONEST.")),
             renderPageHint("timeclock"),
             // Stat tiles — same [label, value, isRed] pattern as Done's summary row
-            React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" } }, [
+            React.createElement("div", { "data-tour": "timeclock-stats", style: { display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" } }, [
                 ["TODAY", todayMinutes, runningInFilter],
                 ["LAST 7 DAYS", weekMinutes, false],
                 ["ALL TIME", allMinutes, false],
@@ -6489,13 +6588,27 @@ function App() {
             ].map(([label, mins, isRed]) => (React.createElement("div", { key: label, style: { flex: 1, minWidth: 100, border: isRed ? `1.5px solid ${T.red}` : T.cardBorder, borderRadius: 4, padding: "10px 14px", background: T.panel, boxShadow: isRed ? `0 0 0 3px rgba(224,48,48,0.12)` : T.cardShadow } },
                 React.createElement("div", { style: { fontFamily: FONT_CONDENSED, fontWeight: 400, fontSize: 26, lineHeight: 1, color: isRed ? T.red : T.ink } }, formatDuration(mins)),
                 React.createElement("div", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: T.ink3, marginTop: 4 } }, label))))),
-            // Client filter (round 10, item 6c) — All, then whichever clients have
-            // logged entries, newest-used first, plus an Untagged bucket only when
-            // at least one entry actually has no client.
-            React.createElement("div", { style: { display: "flex", gap: 5, marginBottom: 16, flexWrap: "wrap", alignItems: "center" } },
-                React.createElement("span", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3, marginRight: 3 } }, "CLIENT"),
-                [{ key: "all", label: "All" }, ...knownClients.map(c => ({ key: c, label: c })), ...(hasUntagged ? [{ key: "__untagged__", label: "Untagged" }] : [])]
-                    .map(f => React.createElement("button", { key: f.key, onClick: () => setTimeClientFilter(f.key), style: isMobile ? C.pill(timeClientFilter === f.key, true) : { ...C.pill(timeClientFilter === f.key), fontSize: 10, padding: "4px 10px" } }, f.label))),
+            // Filter (Round 13) — "All" plus ONE picker for a single person or
+            // job, instead of a pill per client (round 10, item 6c), which
+            // filled the screen once there were more than a few. The picker
+            // lists everyone with logged time, newest-used first, with what
+            // is still unbilled for each, plus Untagged when any entry has
+            // no name on it.
+            React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap", alignItems: "center" } },
+                React.createElement("span", { style: { fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: T.ink3, marginRight: 3 } }, "SHOWING"),
+                React.createElement("button", { onClick: () => setTimeClientFilter("all"), style: isMobile ? C.pill(timeClientFilter === "all", true) : { ...C.pill(timeClientFilter === "all"), fontSize: 10, padding: "4px 10px" } }, "All"),
+                (knownClients.length > 0 || hasUntagged) && React.createElement("select", {
+                    value: timeClientFilter === "all" ? "" : timeClientFilter,
+                    onChange: ev => setTimeClientFilter(ev.target.value || "all"),
+                    "aria-label": "Show one person or job",
+                    style: { ...(isMobile ? C.pill(timeClientFilter !== "all", true) : { ...C.pill(timeClientFilter !== "all"), fontSize: 10, padding: "4px 10px" }), fontFamily: "inherit", maxWidth: "100%", outline: "none" }
+                },
+                    React.createElement("option", { value: "" }, "By person\u2026"),
+                    knownClients.map(c => {
+                        const owed = timeEntries.filter(e => e.client === c && !e.invoiced).reduce((acc, e) => acc + e.minutes, 0);
+                        return React.createElement("option", { key: c, value: c }, owed > 0 ? `${c} \u00B7 ${formatDuration(owed)} to invoice` : c);
+                    }),
+                    hasUntagged && React.createElement("option", { value: "__untagged__" }, "Untagged"))),
             // Invoicing (Round 12) — what's still unbilled for the current
             // filter, with a one-tap "mark all invoiced" (confirmed first).
             toInvoice.length > 0 && React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 16, padding: "9px 12px", border: `1.5px dashed ${T.lineSoft}`, borderRadius: 4, background: T.panel } },
@@ -6525,12 +6638,12 @@ function App() {
                                 React.createElement("i", { className: "ti ti-player-pause", style: { fontSize: 14 } }),
                                 " Pause"),
                         React.createElement("button", { onClick: () => askConfirm({ title: "Discard timer", message: "This running timer will be discarded without logging any time.", confirmLabel: "Discard timer", onConfirm: cancelTimer }), style: { padding: "9px 16px", borderRadius: 4, cursor: "pointer", fontSize: 12.5, fontWeight: 600, background: "transparent", color: T.ink3, border: `1px solid ${T.line}` } }, "Discard")))
-                : React.createElement("div", { style: { border: T.cardBorder, borderRadius: 4, padding: "16px", background: T.panel, marginBottom: 16, boxShadow: T.cardShadow } },
+                : React.createElement("div", { "data-tour": "timeclock-log", style: { border: T.cardBorder, borderRadius: 4, padding: "16px", background: T.panel, marginBottom: 16, boxShadow: T.cardShadow } },
                     React.createElement("div", { style: { display: "flex", gap: 5, marginBottom: 14 } },
                         ["timer", "manual"].map(mode => React.createElement("button", { key: mode, onClick: () => setTimeEntryMode(mode), style: isMobile ? C.pill(timeEntryMode === mode, true) : { ...C.pill(timeEntryMode === mode), fontSize: 11 } }, mode === "timer" ? "Start a Timer" : "Log Manually"))),
                     React.createElement("div", { style: { marginBottom: 12 } },
                         React.createElement("input", { value: timeDraftNote, onChange: e => setTimeDraftNote(e.target.value), placeholder: "What are you working on? (optional)", style: { ...inputStyle, width: "100%" } })),
-                    React.createElement("div", { style: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: T.ink3, marginBottom: 6 } }, "CLIENT"),
+                    React.createElement("div", { style: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: T.ink3, marginBottom: 6 } }, "PERSON / JOB"),
                     React.createElement("div", { style: { marginBottom: 14 } },
                         React.createElement("input", { value: timeDraftClient, onChange: e => setTimeDraftClient(e.target.value), placeholder: "Who or what job is this for? (optional)", list: "tc-clients-draft", style: { ...inputStyle, width: "100%" } }),
                         React.createElement("datalist", { id: "tc-clients-draft" }, knownClients.map(c => React.createElement("option", { key: c, value: c })))),
@@ -7259,7 +7372,7 @@ function App() {
                 tab === "projects" && ProjectsView(),
                 tab === "lists" && ListsView(),
                 tab === "timeclock" && effectiveModules.timeclock && TimeClockView(),
-                tab === "settings" && React.createElement(SettingsView, { modules, onToggleModule: toggleModule, bottomBarModule, onPickBottomBarModule: pickBottomBarModule, onReplayOnboarding: replayOnboarding, onReplayTour: replayTour, renderDoneHistory: DoneView, doneCount: completedToday.length, openDone: doneJump, onDoneJumpHandled: () => setDoneJump(false) })),
+                tab === "settings" && React.createElement(SettingsView, { modules, onToggleModule: toggleModule, bottomBarModule, onPickBottomBarModule: pickBottomBarModule, onReplayTour: replayTour, onModuleTour: replayModuleTour, renderDoneHistory: DoneView, doneCount: completedToday.length, openDone: doneJump, onDoneJumpHandled: () => setDoneJump(false) })),
             modal && React.createElement(TaskModal, { task: modal, onSave: saveTask, onDelete: deleteTask, onClose: () => setModal(null) }),
             calModal && React.createElement(CalendarEventModal, { event: calModal, onSave: saveCalendarEvent, onDelete: deleteCalendarEvent, onClose: () => setCalModal(null) }),
             ideaEditModal && React.createElement(IdeaEditModal, { idea: ideaEditModal, onSave: saveIdeaEdit, onDelete: deleteIdeaFromModal, onClose: () => setIdeaEditModal(null) }),
@@ -7269,8 +7382,8 @@ function App() {
             listItemEdit && React.createElement(ProjectItemEditModal, { item: listItemEdit.item, onSave: (text) => saveListItemText(listItemEdit.listId, listItemEdit.item.id, text), onClose: () => setListItemEdit(null) }),
             confirmState && React.createElement(ConfirmModal, { title: confirmState.title, message: confirmState.message, confirmLabel: confirmState.confirmLabel, onConfirm: confirmState.onConfirm, onClose: () => setConfirmState(null) }),
             lightboxAttachment && React.createElement(ImageLightbox, { attachment: lightboxAttachment, onClose: () => setLightboxAttachment(null) }),
-            onboardingOpen && React.createElement(OnboardingModal, { onClose: closeOnboarding }),
-            tourOpen && React.createElement(GuidedTour, { setTab, onClose: closeTour })),
+            tourOpen && React.createElement(GuidedTour, { setTab, onClose: closeTour }),
+            moduleTour && !tourOpen && React.createElement(GuidedTour, { key: moduleTour, steps: MODULE_TOURS[moduleTour], setTab, onClose: () => setModuleTour(null), onSkip: skipModuleTour })),
             // "— Night Desk" style caption anchored just under the poster frame —
             // desktop-only, same reasoning as the corner marks: there's no
             // "frame" to sit under once the shell goes full-bleed on mobile.
